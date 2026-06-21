@@ -1,0 +1,140 @@
+[project]
+name = "localy"
+version = "0.1.0"
+description = "Fast, accessible local LLM platform — auto-tuned inference, honest hardware-fit advising, and seamless device pooling."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+authors = [
+    { name = "Localy Team" },
+]
+keywords = ["llm", "local", "inference", "llama.cpp", "auto-tuning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.scripts]
+localy = "localy.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/localy-ai/localy"
+Repository = "https://github.com/localy-ai/localy"
+Documentation = "https://github.com/localy-ai/localy/tree/main/docs"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/localy"]
+
+# ===========================
+# Dependencies
+# ===========================
+
+dependencies = [
+    # Core inference
+    "llama-cpp-python>=0.3.0",
+    # API server
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    # Configuration & validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    # CLI
+    "typer[all]>=0.15.0",
+    "rich>=13.9.0",
+    # Logging
+    "structlog>=24.4.0",
+    # System detection
+    "psutil>=6.1.0",
+    "cpufeature>=0.2.0",
+    # Model downloads
+    "httpx>=0.28.0",
+    "huggingface-hub>=0.26.0",
+    # Utilities
+    "aiofiles>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+    "pip-audit>=2.7.0",
+]
+
+# ===========================
+# Tool Configuration
+# ===========================
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "S",     # flake8-bandit (security)
+    "A",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "DTZ",   # flake8-datetimez
+    "T20",   # flake8-print
+    "RET",   # flake8-return
+    "SIM",   # flake8-simplify
+    "TCH",   # flake8-type-checking
+    "PTH",   # flake8-use-pathlib
+    "RUF",   # ruff-specific rules
+]
+ignore = [
+    "S101",  # assert allowed in tests
+    "T201",  # print allowed (CLI app)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["localy"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "cpufeature.*",
+    "llama_cpp.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests requiring model files",
+    "gpu: marks tests requiring GPU hardware",
+]

@@ -1,0 +1,91 @@
+# ===========================
+# Localy — .gitignore
+# ===========================
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+.python-version
+
+# ----- IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ----- Environment / Secrets -----
+.env
+.env.local
+.env.production
+*.pem
+*.key
+
+# ----- Model Files (large, not in git) -----
+*.gguf
+*.bin
+*.safetensors
+*.ggml
+
+# ----- Localy Data -----
+backend/data/
+backend/models/
+benchmarks/
+
+# ----- Testing -----
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ----- Node (desktop app) -----
+node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+
+# ----- Tauri Build -----
+desktop/src-tauri/binaries/
+*.msi
+*.exe
+*.dmg
+*.AppImage
+*.deb
+
+# ----- Logs -----
+*.log
+logs/
+
+# ----- PyInstaller -----
+*.spec
