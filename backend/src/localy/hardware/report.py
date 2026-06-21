@@ -191,12 +191,31 @@ class HardwareReport:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary (for JSON API responses)."""
+        cpu_dict = asdict(self.cpu)
+        cpu_dict["recommended_generation_threads"] = self.cpu.recommended_generation_threads
+        cpu_dict["recommended_batch_threads"] = self.cpu.recommended_batch_threads
+
+        memory_dict = asdict(self.memory)
+        memory_dict["total_gb"] = self.memory.total_gb
+        memory_dict["available_gb"] = self.memory.available_gb
+        memory_dict["safe_model_budget_gb"] = self.memory.safe_model_budget_gb
+        memory_dict["has_swap_pressure"] = self.memory.has_swap_pressure
+        memory_dict["swap_free_bytes"] = self.memory.swap_total_bytes - self.memory.swap_used_bytes
+
+        storage_dict = asdict(self.storage)
+        storage_dict["free_gb"] = self.storage.free_gb
+        storage_dict["total_gb"] = self.storage.total_gb
+
+        is_dict = asdict(self.instruction_sets)
+        is_dict["sse4_2"] = self.instruction_sets.sse42
+        is_dict["is_optimized"] = self.instruction_sets.is_optimized
+
         return {
-            "cpu": asdict(self.cpu),
+            "cpu": cpu_dict,
             "gpu": asdict(self.gpu),
-            "memory": asdict(self.memory),
-            "storage": asdict(self.storage),
-            "instruction_sets": asdict(self.instruction_sets),
+            "memory": memory_dict,
+            "storage": storage_dict,
+            "instruction_sets": is_dict,
             "timestamp": self.timestamp,
             "hardware_hash": self.hardware_hash,
             "summary": self.summary,
