@@ -96,6 +96,8 @@ Localy does **not** reimplement inference. It wraps llama.cpp and adds:
 - **Phase 3**: Device pooling — combine LAN devices for bigger models
 - **Phase 4**: Internet pooling — friends-only, then open network (scope only)
 
+See [docs/vision-and-roadmap.md](docs/vision-and-roadmap.md) for the full pooling vision (share models across a friend group over WiFi/hotspot/internet), the honest "why pooling ≠ faster" reasoning, and the differentiating features.
+
 ## Target Hardware
 
 Optimized for constrained devices first (not high-end GPUs):

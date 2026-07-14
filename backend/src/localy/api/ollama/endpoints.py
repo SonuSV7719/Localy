@@ -7,6 +7,7 @@ Matches Ollama API behavior exactly, including line-delimited JSON streaming.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import AsyncGenerator
@@ -249,7 +250,6 @@ async def pull_model_endpoint(
                 loop.call_soon_threadsafe(queue.put_nowait, (-2, -2, 0.0))  # Sentinel for error
 
         # Start download in background
-        import asyncio
         asyncio.create_task(download_worker())
 
         yield json.dumps({"status": "pulling manifest"}) + "\n"

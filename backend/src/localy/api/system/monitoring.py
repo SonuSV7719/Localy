@@ -70,6 +70,17 @@ async def get_model_fit(
     return hw_service.get_fit_assessment(model_id, context)
 
 
+@system_router.get(
+    "/system/models",
+    dependencies=[Depends(verify_api_key)],
+)
+async def get_system_models(
+    model_service: ModelService = Depends(get_model_service),
+) -> list[dict[str, Any]]:
+    """Retrieve full registry catalog of models annotated with local status and fit assessments."""
+    return model_service.list_models()
+
+
 @system_router.post(
     "/system/benchmark",
     dependencies=[Depends(verify_api_key)],

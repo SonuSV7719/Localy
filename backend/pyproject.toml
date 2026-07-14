@@ -59,6 +59,8 @@ dependencies = [
     "huggingface-hub>=0.26.0",
     # Utilities
     "aiofiles>=24.1.0",
+    # Device pooling (Phase 3) — mDNS discovery
+    "zeroconf>=0.130.0",
 ]
 
 [project.optional-dependencies]

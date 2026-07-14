@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from localy.api.v1 import v1_router
 from localy.api.ollama import ollama_router
 from localy.api.system import system_router
+from localy.api.pool import pool_router
 
 api_router = APIRouter()
 
@@ -18,3 +19,4 @@ api_router = APIRouter()
 api_router.include_router(v1_router)
 api_router.include_router(ollama_router)
 api_router.include_router(system_router)
+api_router.include_router(pool_router)

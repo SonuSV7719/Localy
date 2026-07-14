@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 from typing import AsyncGenerator
+import httpx
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from localy.core.config import get_settings
 from localy.core.dependencies import get_model_service, verify_api_key
@@ -56,6 +57,15 @@ async def chat_completions(
     Supports both standard JSON response and server-sent events (SSE) streaming.
     """
     settings = get_settings()
+
+    # Transparent pooling: if a pooled coordinator is serving this model, forward
+    # the request to it (llama-server is OpenAI-compatible). Solo path otherwise.
+    from localy.services.pool_service import get_pool_service
+
+    pool = get_pool_service(settings)
+    if pool.is_serving(request.model):
+        return await _proxy_to_pool(pool.serving_url(), request)
+
     chat_service = ChatService(settings, model_service)
 
     # Normalize messages
@@ -141,3 +151,32 @@ async def chat_completions(
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+
+async def _proxy_to_pool(base_url: str, request: ChatCompletionRequest):
+    """Forward a chat completion to the pooled llama-server (OpenAI-compatible).
+
+    Handles both streaming (SSE passthrough) and non-streaming responses so the
+    caller cannot tell whether the model ran solo or across the pool.
+    """
+    url = f"{base_url}/v1/chat/completions"
+    payload = request.model_dump(exclude_none=True)
+
+    if not request.stream:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            resp = await client.post(url, json=payload)
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+
+    async def sse_passthrough() -> AsyncGenerator[str, None]:
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                async with client.stream("POST", url, json=payload) as resp:
+                    async for line in resp.aiter_lines():
+                        if line:
+                            yield line + "\n"
+        except Exception as e:  # pragma: no cover - network edge
+            err = {"error": {"message": f"pool proxy error: {e}", "type": "server_error"}}
+            yield f"data: {json.dumps(err)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse_passthrough(), media_type="text/event-stream")

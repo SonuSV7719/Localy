@@ -69,6 +69,8 @@ from localy.cli.commands.fit import fit  # noqa: E402
 from localy.cli.commands.run import run  # noqa: E402
 from localy.cli.commands.benchmark import benchmark  # noqa: E402
 from localy.cli.commands.serve import serve  # noqa: E402
+from localy.cli.commands.worker import worker  # noqa: E402
+from localy.cli.commands.pool import pool_app  # noqa: E402
 
 app.command()(probe)
 app.command()(models)
@@ -77,6 +79,8 @@ app.command()(fit)
 app.command()(run)
 app.command()(benchmark)
 app.command()(serve)
+app.command()(worker)
+app.add_typer(pool_app, name="pool")
 
 
 if __name__ == "__main__":

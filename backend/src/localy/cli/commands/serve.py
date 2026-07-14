@@ -62,13 +62,24 @@ def serve(
     console.print()
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
 
+    import sys
     import uvicorn
+    from localy.main import create_app
 
-    uvicorn.run(
-        "localy.main:create_app",
-        host=bind_host,
-        port=bind_port,
-        reload=reload,
-        factory=True,
-        log_level=settings.log_level.lower(),
-    )
+    if getattr(sys, "frozen", False):
+        uvicorn.run(
+            create_app(),
+            host=bind_host,
+            port=bind_port,
+            reload=False,
+            log_level=settings.log_level.lower(),
+        )
+    else:
+        uvicorn.run(
+            "localy.main:create_app",
+            host=bind_host,
+            port=bind_port,
+            reload=reload,
+            factory=True,
+            log_level=settings.log_level.lower(),
+        )

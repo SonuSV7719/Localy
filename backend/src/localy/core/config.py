@@ -142,6 +142,36 @@ class Settings(BaseSettings):
         description="Use memory-mapped model loading (recommended).",
     )
 
+    # --- Pooling (Phase 3) ---
+    llama_bin_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Directory containing the RPC-enabled rpc-server / llama-server "
+            "binaries (built via scripts/build-llama-rpc). "
+            "Defaults to <repo>/backend/vendor/llama-rpc if present."
+        ),
+    )
+    rpc_port: int = Field(
+        default=50052,
+        ge=1024,
+        le=65535,
+        description="Port the local rpc-server worker listens on.",
+    )
+    rpc_bind_host: str = Field(
+        default="0.0.0.0",
+        description="Bind address for the rpc-server worker (0.0.0.0 to accept LAN peers).",
+    )
+    coordinator_port: int = Field(
+        default=8080,
+        ge=1024,
+        le=65535,
+        description="Port for the local llama-server coordinator that pooled mode proxies to.",
+    )
+    pool_enabled: bool = Field(
+        default=False,
+        description="Enable device pooling features. Off by default; solo mode always works.",
+    )
+
     # --- Security ---
     api_key: str | None = Field(
         default=None,

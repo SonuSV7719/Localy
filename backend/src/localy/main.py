@@ -61,10 +61,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS configuration
+    # CORS configuration.
+    # Starlette's CORSMiddleware matches allow_origins exactly and does NOT
+    # support port globs like "http://localhost:*". The desktop app (Vite dev
+    # on a variable port, and the Tauri webview) needs any localhost port, so
+    # we match those with a regex and keep allow_origins for exact entries.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost)$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

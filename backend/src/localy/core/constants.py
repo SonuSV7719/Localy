@@ -158,6 +158,14 @@ MDNS_SERVICE_TYPE = "_localy._tcp.local."
 POOL_HEALTH_CHECK_INTERVAL_SECONDS = 10
 POOL_STALE_THRESHOLD_SECONDS = 30
 
+# Default ports for the RPC-based pooling stack.
+DEFAULT_RPC_PORT = 50052  # llama.cpp rpc-server worker port
+DEFAULT_COORDINATOR_PORT = 8080  # local llama-server (coordinator) port we proxy to
+
+# rpc-server advertises its usable compute memory in MiB via --mem.
+# Fraction of a device's safe model budget offered to the pool by default.
+POOL_MEMORY_OFFER_FRACTION = 0.9
+
 
 # ===========================
 # Telemetry
