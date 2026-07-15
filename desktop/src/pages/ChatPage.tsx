@@ -348,8 +348,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   chatWrapper: {
     display: "flex",
     flexDirection: "row",
-    height: "100vh",
-    width: "100vw",
+    height: "100%",
+    width: "100%",
+    minWidth: 0,
     overflow: "hidden",
     background: "#09090b"
   },
@@ -406,6 +407,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     display: "flex",
     flexDirection: "column",
     flexGrow: 1,
+    minWidth: 0,
     height: "100%",
     position: "relative"
   },

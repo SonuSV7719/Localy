@@ -41,10 +41,30 @@ export const api = {
   },
 
   /**
-   * Get list of all registered models annotated with download status and fit assessment
+   * Get list of all registered models annotated with download status and fit assessment.
+   * Variants are fetched live from Hugging Face (cached).
    */
   async getModels(): Promise<RegistryModel[]> {
     return apiClient.get<RegistryModel[]>("/system/models");
+  },
+
+  /**
+   * Search Hugging Face for GGUF models to add to the catalog.
+   */
+  async searchCatalog(query: string): Promise<{ id: string; downloads: number; likes: number }[]> {
+    return apiClient.get<{ id: string; downloads: number; likes: number }[]>(
+      `/system/catalog/search?q=${encodeURIComponent(query)}`
+    );
+  },
+
+  /**
+   * Add a Hugging Face GGUF repo to the catalog (all its variants become available).
+   */
+  async addCatalogModel(repoId: string): Promise<{ id?: string; variants?: number; error?: string }> {
+    return apiClient.post<{ id?: string; variants?: number; error?: string }>(
+      "/system/catalog/add",
+      { repo_id: repoId }
+    );
   },
 
   /**
@@ -108,5 +128,15 @@ export const api = {
   /** Stop pooled inference. */
   async unloadPooled(): Promise<{ status: string }> {
     return apiClient.post<{ status: string }>("/pool/unload", {});
+  },
+
+  /** Share THIS device as a worker (start rpc-server + advertise). */
+  async startWorker(): Promise<{ running: boolean; address?: string }> {
+    return apiClient.post<{ running: boolean; address?: string }>("/pool/worker/start", {});
+  },
+
+  /** Stop sharing this device. */
+  async stopWorker(): Promise<{ running: boolean }> {
+    return apiClient.post<{ running: boolean }>("/pool/worker/stop", {});
   },
 };

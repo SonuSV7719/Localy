@@ -11,6 +11,7 @@ export const PoolPage: React.FC = () => {
   const [busy, setBusy] = useState<string>("");
   const [manualAddr, setManualAddr] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [scanned, setScanned] = useState<boolean>(false);
 
   useEffect(() => {
     refreshStatus();
@@ -41,7 +42,24 @@ export const PoolPage: React.FC = () => {
     setBusy("discover");
     setError("");
     try {
-      setDiscovered(await api.discoverPool(false));
+      const found = await api.discoverPool(false);
+      setDiscovered(found);
+      setScanned(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const joinAll = async () => {
+    setBusy("joinall");
+    setError("");
+    try {
+      for (const w of discovered) {
+        await api.joinPool(w.host, w.port, w.label);
+      }
+      await refreshStatus();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -112,6 +130,20 @@ export const PoolPage: React.FC = () => {
     }
   };
 
+  const toggleWorker = async () => {
+    setBusy("worker");
+    setError("");
+    try {
+      if (status?.worker_running) await api.stopWorker();
+      else await api.startWorker();
+      await refreshStatus();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
   return (
     <div style={styles.wrap}>
       <div style={styles.header} className="glass-panel">
@@ -169,6 +201,29 @@ export const PoolPage: React.FC = () => {
           )}
         </div>
 
+        {/* Share this device */}
+        <div style={styles.card} className="glass-panel">
+          <div style={styles.cardTitle}>
+            Share This Device
+            {status?.worker_running && <span style={styles.activeBadge}>● Sharing</span>}
+          </div>
+          <p style={styles.shareText}>
+            Let other Localy devices on this network borrow this machine's memory/CPU.
+            When on, this PC appears in your friends' pools automatically.
+          </p>
+          <button
+            className={status?.worker_running ? "btn btn-secondary" : "btn btn-primary"}
+            onClick={toggleWorker}
+            disabled={busy === "worker"}
+          >
+            {busy === "worker"
+              ? "…"
+              : status?.worker_running
+              ? "Stop sharing"
+              : "🤝 Share this device"}
+          </button>
+        </div>
+
         {/* Add devices */}
         <div style={styles.card} className="glass-panel">
           <div style={styles.cardTitle}>Add Devices</div>
@@ -185,23 +240,47 @@ export const PoolPage: React.FC = () => {
             <button className="btn btn-secondary" onClick={joinManual}>Add</button>
           </div>
           {discovered.length > 0 && (
-            <div style={styles.nodeList}>
-              {discovered.map((w) => (
-                <div key={w.node_id} style={styles.node}>
-                  <div>
-                    <span style={styles.nodeLabel}>{w.label}</span>
-                    <div style={styles.nodeAddr}>{w.host}:{w.port}</div>
-                  </div>
-                  <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label)}>
-                    Join
-                  </button>
-                </div>
-              ))}
+            <>
+              <div style={styles.scanResult}>
+                Found {discovered.length} device{discovered.length > 1 ? "s" : ""}
+                <button className="btn btn-primary" style={styles.smBtn} onClick={joinAll} disabled={busy === "joinall"}>
+                  {busy === "joinall" ? "Joining…" : "Join all"}
+                </button>
+              </div>
+              <div style={styles.nodeList}>
+                {discovered.map((w) => {
+                  const inPool = status?.nodes.some((n) => n.node_id === w.node_id || n.address === `${w.host}:${w.port}`);
+                  return (
+                    <div key={w.node_id} style={styles.node}>
+                      <div>
+                        <span style={styles.nodeLabel}>{w.label}</span>
+                        <div style={styles.nodeAddr}>
+                          {w.host}:{w.port}{w.budget_gb ? ` · ~${w.budget_gb.toFixed(1)} GB` : ""}
+                        </div>
+                      </div>
+                      {inPool ? (
+                        <span style={styles.joinedTag}>✓ in pool</span>
+                      ) : (
+                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label)}>
+                          Join
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          {scanned && discovered.length === 0 && busy !== "discover" && (
+            <div style={styles.emptyScan}>
+              No devices found on your network. On each other device: open Localy →
+              Device Pool → <b>Share this device</b> (or install the Android worker and tap Connect),
+              and make sure everyone is on the <b>same WiFi or hotspot</b>. Then scan again.
             </div>
           )}
           <p style={styles.hint}>
-            On the other device, install Localy and start a worker (desktop: <code>localy worker</code>;
-            the zero-setup Android app is coming). It appears here automatically on the same network.
+            Add as many devices as you like — layers are split across all of them by memory.
+            Each appears here automatically once it's sharing on the same network.
           </p>
         </div>
 
@@ -280,6 +359,10 @@ const styles: { [key: string]: React.CSSProperties } = {
   addrInput: { flexGrow: 1, minWidth: "220px", fontSize: "13px" },
   select: { minWidth: "220px", fontSize: "13px" },
   hint: { fontSize: "12px", color: "#71717a", marginTop: "12px", lineHeight: 1.5 },
+  shareText: { fontSize: "13px", color: "#a1a1aa", marginBottom: "14px", lineHeight: 1.5 },
+  scanResult: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "14px", fontSize: "13px", color: "#e4e4e7", fontWeight: 500 },
+  joinedTag: { fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
+  emptyScan: { marginTop: "14px", padding: "12px 14px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px", fontSize: "12px", color: "#a1a1aa", lineHeight: 1.6 },
   muted: { fontSize: "13px", color: "#71717a" },
   planBox: { marginTop: "16px", padding: "16px", borderRadius: "10px", border: "1px solid", background: "rgba(255,255,255,0.02)" },
   fitBadge: { fontSize: "13px", fontWeight: 600, marginBottom: "8px" },

@@ -16,9 +16,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![greet])
-        .run(tauri::generate_context!(), |app_handle, event| {
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
             sidecar::handle_app_exit(app_handle, &event);
-        })
-        .expect("error while running tauri application");
+        });
 }
 

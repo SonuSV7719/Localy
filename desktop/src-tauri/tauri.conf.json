@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Localy",
+  "mainBinaryName": "Localy",
   "version": "0.1.0",
   "identifier": "com.localai.localy",
   "build": {
@@ -16,7 +17,9 @@
         "width": 1200,
         "height": 800,
         "minWidth": 900,
-        "minHeight": 600
+        "minHeight": 600,
+        "center": true,
+        "maximized": true
       }
     ],
     "security": {
@@ -25,9 +28,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "externalBin": [
-      "binaries/localy-backend"
+    "targets": ["nsis"],
+    "resources": [
+      "resources/backend",
+      "resources/llama-rpc"
     ],
     "icon": [
       "icons/32x32.png",

@@ -150,6 +150,7 @@ export interface PoolStatus {
   pooled_active: boolean;
   active_model: string | null;
   proxy_url: string | null;
+  worker_running: boolean;
   node_count: number;
   remote_count: number;
   total_budget_gb: number;

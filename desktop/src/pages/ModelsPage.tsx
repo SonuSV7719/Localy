@@ -23,9 +23,40 @@ export const ModelsPage: React.FC = () => {
   }>({});
   const trackers = useRef<{ [modelId: string]: DownloadTracker }>({});
 
+  // Hugging Face search / add state
+  const [hfQuery, setHfQuery] = useState<string>("");
+  const [hfResults, setHfResults] = useState<{ id: string; downloads: number; likes: number }[]>([]);
+  const [hfBusy, setHfBusy] = useState<string>("");
+  const [hfSearched, setHfSearched] = useState<boolean>(false);
+
   useEffect(() => {
     fetchCatalog();
   }, []);
+
+  const searchHF = async () => {
+    setHfBusy("search");
+    try {
+      setHfResults(await api.searchCatalog(hfQuery));
+      setHfSearched(true);
+    } catch (e: any) {
+      alert(`Search failed: ${e.message}`);
+    } finally {
+      setHfBusy("");
+    }
+  };
+
+  const addHF = async (repoId: string) => {
+    setHfBusy(repoId);
+    try {
+      const r = await api.addCatalogModel(repoId);
+      if (r.error) alert(r.error);
+      else await fetchCatalog(); // new model (with all its variants) appears in the grid
+    } catch (e: any) {
+      alert(`Add failed: ${e.message}`);
+    } finally {
+      setHfBusy("");
+    }
+  };
 
   // Fetch complete catalog of models
   const fetchCatalog = async () => {
@@ -177,10 +208,40 @@ export const ModelsPage: React.FC = () => {
       
       {/* Catalog Header */}
       <div style={styles.header} className="glass-panel">
-        <h1 style={styles.headerTitle}>Model Registry Catalog</h1>
+        <h1 style={styles.headerTitle}>Model Catalog</h1>
         <p style={styles.headerSub}>
-          Browse available models. Localy dynamically runs live hardware fit assessments before letting you pull weights.
+          Quantization variants are pulled live from Hugging Face. Search to add any GGUF model.
         </p>
+        <div style={styles.hfSearchRow}>
+          <input
+            style={styles.hfInput}
+            placeholder="Search Hugging Face for a model (e.g. qwen2.5, phi-4, gemma)…"
+            value={hfQuery}
+            onChange={(e) => setHfQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") searchHF(); }}
+          />
+          <button className="btn btn-primary" onClick={searchHF} disabled={hfBusy === "search"}>
+            {hfBusy === "search" ? "Searching…" : "🔍 Search HF"}
+          </button>
+        </div>
+        {hfResults.length > 0 && (
+          <div style={styles.hfResults}>
+            {hfResults.map((r) => (
+              <div key={r.id} style={styles.hfResult}>
+                <div style={styles.hfResultInfo}>
+                  <span style={styles.hfResultId}>{r.id}</span>
+                  <span style={styles.hfResultMeta}>▼ {r.downloads.toLocaleString()} · ♥ {r.likes.toLocaleString()}</span>
+                </div>
+                <button className="btn btn-secondary" style={styles.hfAddBtn} onClick={() => addHF(r.id)} disabled={hfBusy === r.id}>
+                  {hfBusy === r.id ? "Adding…" : "+ Add"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {hfSearched && hfResults.length === 0 && hfBusy !== "search" && (
+          <p style={styles.headerSub}>No GGUF models found for that search.</p>
+        )}
       </div>
 
       {/* Catalog Grid */}
@@ -323,6 +384,14 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: "14px",
     color: "#a1a1aa"
   },
+  hfSearchRow: { display: "flex", gap: "10px", marginTop: "14px", alignItems: "center" },
+  hfInput: { flexGrow: 1, fontSize: "13px" },
+  hfResults: { marginTop: "12px", display: "flex", flexDirection: "column", gap: "6px", maxHeight: "220px", overflowY: "auto" },
+  hfResult: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px" },
+  hfResultInfo: { display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 },
+  hfResultId: { fontSize: "13px", color: "#e4e4e7", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  hfResultMeta: { fontSize: "11px", color: "#71717a" },
+  hfAddBtn: { fontSize: "12px", padding: "6px 14px", flexShrink: 0 },
   contentArea: {
     flexGrow: 1,
     overflowY: "auto",

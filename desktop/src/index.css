@@ -159,6 +159,20 @@ input:focus, select:focus, textarea:focus {
   background: rgba(255, 255, 255, 0.05);
 }
 
+/* Native <select> dropdown options: the popup list inherits the near-transparent
+   select background, making text unreadable. Give options a solid dark bg and
+   light text so every quantization is clearly visible. */
+select option {
+  background-color: #18181b;
+  color: var(--text-primary);
+  padding: 8px;
+}
+select option:checked,
+select option:hover {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

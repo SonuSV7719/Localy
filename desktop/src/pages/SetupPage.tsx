@@ -116,6 +116,16 @@ export const SetupPage: React.FC<SetupPageProps> = ({ onComplete }) => {
             <button className="btn btn-primary" style={styles.actionBtn} onClick={startScan}>
               Start Hardware Scan &rarr;
             </button>
+            <button
+              className="btn btn-secondary"
+              style={{ ...styles.actionBtn, marginTop: "10px" }}
+              onClick={onComplete}
+            >
+              Skip — go to the app
+            </button>
+            <p style={{ ...styles.subtitle, marginTop: "16px", marginBottom: 0, fontSize: "12px" }}>
+              Skip if you just want to chat, pick a model, or pool with other devices.
+            </p>
           </div>
         )}
 
@@ -171,9 +181,21 @@ export const SetupPage: React.FC<SetupPageProps> = ({ onComplete }) => {
             </div>
 
             {downloadStatus === "idle" ? (
-              <button className="btn btn-primary" style={styles.actionBtn} onClick={startDownload}>
-                Download SmolLM2 & Run Benchmark
-              </button>
+              <>
+                <button className="btn btn-primary" style={styles.actionBtn} onClick={startDownload}>
+                  Download SmolLM2 & Run Benchmark
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style={{ ...styles.actionBtn, marginTop: "10px" }}
+                  onClick={onComplete}
+                >
+                  Skip — go to the app
+                </button>
+                <p style={{ ...styles.subtitle, marginTop: "16px", marginBottom: 0, fontSize: "12px" }}>
+                  Skip to pick another model, chat, or pool with other devices instead.
+                </p>
+              </>
             ) : (
               <div style={styles.downloadSection}>
                 <DownloadProgress stats={downloadStats} status={downloadStatus} />
