@@ -12,6 +12,8 @@ Device pooling API routes (Phase 3).
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends
 
 from localy.core.config import Settings, get_settings
@@ -62,7 +64,21 @@ async def pool_discover(
     auto_join: bool = False, settings: Settings = Depends(get_settings)
 ) -> list[dict]:
     """List pool workers advertised on the LAN via mDNS (optionally auto-join them)."""
-    return get_pool_service(settings).discover(auto_join=auto_join)
+    # zeroconf runs its own event loop — never call it on the FastAPI loop thread
+    # (raises EventLoopBlocked). Run in a worker thread.
+    return await asyncio.to_thread(get_pool_service(settings).discover, auto_join)
+
+
+@pool_router.post("/worker/start", dependencies=[Depends(verify_api_key)])
+async def pool_worker_start(settings: Settings = Depends(get_settings)) -> dict:
+    """Share THIS device: start a local rpc-server worker + advertise it."""
+    return await asyncio.to_thread(get_pool_service(settings).start_worker)
+
+
+@pool_router.post("/worker/stop", dependencies=[Depends(verify_api_key)])
+async def pool_worker_stop(settings: Settings = Depends(get_settings)) -> dict:
+    """Stop sharing this device."""
+    return await asyncio.to_thread(get_pool_service(settings).stop_worker)
 
 
 @pool_router.get(
@@ -72,7 +88,7 @@ async def pool_discover(
 )
 async def pool_plan(model_id: str, settings: Settings = Depends(get_settings)) -> ShardPlanResponse:
     """Compute how a model would be split across the current pool."""
-    plan = get_pool_service(settings).plan_for_model(model_id)
+    plan = await asyncio.to_thread(get_pool_service(settings).plan_for_model, model_id)
     return ShardPlanResponse(**plan.to_dict())
 
 
@@ -83,19 +99,20 @@ async def pool_plan(model_id: str, settings: Settings = Depends(get_settings)) -
 )
 async def pool_fit(model_id: str, settings: Settings = Depends(get_settings)) -> ShardPlanResponse:
     """Pool-fit advisor: same as plan, framed as a fit check for the UI."""
-    plan = get_pool_service(settings).plan_for_model(model_id)
+    plan = await asyncio.to_thread(get_pool_service(settings).plan_for_model, model_id)
     return ShardPlanResponse(**plan.to_dict())
 
 
 @pool_router.post("/load", response_model=ShardPlanResponse, dependencies=[Depends(verify_api_key)])
 async def pool_load(req: PoolLoadRequest, settings: Settings = Depends(get_settings)) -> ShardPlanResponse:
     """Load a model split across the pool (spawns the coordinator llama-server)."""
-    plan = get_pool_service(settings).load_pooled(req.model, n_ctx=req.ctx)
+    # Blocking: spawns llama-server and polls readiness. Run off the event loop.
+    plan = await asyncio.to_thread(get_pool_service(settings).load_pooled, req.model, req.ctx)
     return ShardPlanResponse(**plan.to_dict())
 
 
 @pool_router.post("/unload", dependencies=[Depends(verify_api_key)])
 async def pool_unload(settings: Settings = Depends(get_settings)) -> dict[str, str]:
     """Stop pooled inference."""
-    get_pool_service(settings).unload_pooled()
+    await asyncio.to_thread(get_pool_service(settings).unload_pooled)
     return {"status": "stopped"}

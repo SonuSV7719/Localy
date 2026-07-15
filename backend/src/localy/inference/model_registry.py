@@ -389,6 +389,11 @@ class ModelRegistry:
         for model in builtin_models:
             self._models[model.full_id] = model
 
+    def add_model(self, model: ModelEntry) -> None:
+        """Add (or replace) a model in the registry and persist it."""
+        self._models[model.full_id] = model
+        self._save()
+
     def _save(self) -> None:
         """Save registry to disk."""
         data: dict[str, Any] = {"version": 1, "models": []}

@@ -19,6 +19,7 @@ class PoolStatusResponse(BaseModel):
     pooled_active: bool
     active_model: str | None = None
     proxy_url: str | None = None
+    worker_running: bool = False
     node_count: int
     remote_count: int
     total_budget_gb: float

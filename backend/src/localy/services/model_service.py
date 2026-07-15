@@ -32,9 +32,92 @@ class ModelService:
         self._settings = settings
         self._store = store
         self._manager = ModelManager(settings, store)
+        from localy.inference.hf_catalog import HFCatalog
 
-    def list_models(self) -> list[dict[str, Any]]:
-        """List all models in the registry annotated with local status and hardware fit."""
+        self._hf = HFCatalog(settings.cache_path)
+
+    def _resolve_variants(self, entry: Any, dynamic: bool) -> list[tuple[str, Any]]:
+        """Return [(quant, variant-like)] — dynamically from HF when possible, else built-in.
+
+        A variant-like has .file_size_bytes and .huggingface_file (the built-in
+        QuantVariant, or a light shim built from HF metadata).
+        """
+        builtin = list(entry.variants.items())
+        if not dynamic:
+            return builtin
+        repo = next((v.huggingface_repo for _, v in builtin if v.huggingface_repo), "")
+        if not repo:
+            return builtin
+        hf_variants = self._hf.fetch_variants(repo)
+        if not hf_variants:
+            return builtin  # offline / not cached -> built-in
+
+        class _V:  # duck-typed to match QuantVariant fields used below
+            def __init__(self, d: dict[str, Any]) -> None:
+                self.file_size_bytes = d["file_size_bytes"]
+                self.huggingface_file = d["huggingface_file"]
+                self.huggingface_repo = d["huggingface_repo"]
+
+        return [(d["quantization"], _V(d)) for d in hf_variants]
+
+    def search_catalog(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Search Hugging Face for GGUF models to add to the catalog."""
+        return self._hf.search_gguf_models(query, limit=limit)
+
+    def add_hf_model(self, repo_id: str) -> dict[str, Any]:
+        """Add a Hugging Face GGUF repo to the catalog (variants fetched dynamically)."""
+        import re as _re
+
+        from localy.inference.model_registry import ModelEntry, QuantVariant
+
+        variants = self._hf.fetch_variants(repo_id, force=True)
+        if not variants:
+            raise ModelNotFoundError(
+                f"No downloadable GGUF variants found in '{repo_id}'.",
+                details={"repo": repo_id},
+            )
+
+        short = repo_id.split("/")[-1]
+        # Infer parameter count from the repo name, e.g. "...-7B-..." -> 7.0.
+        m = _re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", short)
+        params = float(m.group(1)) if m else 0.0
+        name = _re.sub(r"[-_.]?(GGUF|gguf)$", "", short)
+        name = _re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower() or "model"
+        family = name.split("-")[0]
+
+        variant_map = {
+            v["quantization"]: QuantVariant(
+                quantization=v["quantization"],
+                file_size_bytes=v["file_size_bytes"],
+                huggingface_repo=v["huggingface_repo"],
+                huggingface_file=v["huggingface_file"],
+                sha256="",
+                download_url="",
+            )
+            for v in variants
+        }
+        default_variant = "Q4_K_M" if "Q4_K_M" in variant_map else next(iter(variant_map))
+        entry = ModelEntry(
+            name=name,
+            display_name=short.replace("-", " "),
+            family=family,
+            parameter_count_billions=params,
+            description=f"Added from Hugging Face: {repo_id}",
+            license="see model card",
+            variants=variant_map,
+            default_variant=default_variant,
+            tags=["huggingface"],
+        )
+        self._manager.registry.add_model(entry)
+        return {"id": entry.full_id, "name": entry.name, "variants": len(variant_map)}
+
+    def list_models(self, dynamic: bool = True) -> list[dict[str, Any]]:
+        """List all models in the registry annotated with local status and hardware fit.
+
+        When `dynamic`, each model's quantization variants are fetched live from
+        Hugging Face (cached), so the catalog shows every available quant with
+        real sizes; falls back to the built-in list when offline.
+        """
         registry_models = self._manager.registry.list_models()
         local_files = {f["filename"]: f for f in self._store.list_local_models()}
         probe_report = run_full_probe(self._settings.models_path)
@@ -43,7 +126,7 @@ class ModelService:
 
         for entry in registry_models:
             variants_info = []
-            for quant, var in entry.variants.items():
+            for quant, var in self._resolve_variants(entry, dynamic):
                 is_downloaded = var.huggingface_file in local_files
                 local_file_info = local_files.get(var.huggingface_file)
 

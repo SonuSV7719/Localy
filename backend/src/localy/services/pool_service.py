@@ -10,15 +10,17 @@ for a model that doesn't fit locally and has remote workers available.
 
 from __future__ import annotations
 
+import time
+
 from localy.core.config import Settings
 from localy.core.exceptions import ModelNotFoundError, PoolingError
 from localy.core.logging import get_logger
 from localy.inference.model_manager import ModelManager
 from localy.pooling.coordinator import Coordinator
-from localy.pooling.discovery import WorkerDiscovery
+from localy.pooling.discovery import WorkerAdvertiser, WorkerDiscovery, _local_ip
 from localy.pooling.pool_state import PoolState
 from localy.pooling.shard_planner import PoolNode, ShardPlan, plan_shards
-from localy.pooling.worker import compute_local_capacity
+from localy.pooling.worker import WorkerProcess, compute_local_capacity
 from localy.storage.model_store import ModelStore
 
 logger = get_logger(__name__)
@@ -33,7 +35,48 @@ class PoolService:
         self._coordinator = Coordinator(settings)
         self._manager = ModelManager(settings, ModelStore(settings))
         self._discovery: WorkerDiscovery | None = None
+        self._worker: WorkerProcess | None = None
+        self._advertiser: WorkerAdvertiser | None = None
         self._init_local_node()
+
+    # --- worker role (share THIS device to others' pools) ---
+    @property
+    def worker_running(self) -> bool:
+        return self._worker is not None and self._worker.is_running
+
+    def start_worker(self) -> dict:
+        """Start sharing this device: run rpc-server + advertise over mDNS."""
+        if self.worker_running:
+            return {"running": True, "address": self._worker.address}  # type: ignore[union-attr]
+        cap = compute_local_capacity(self._settings)
+        self._worker = WorkerProcess(self._settings)
+        self._worker.start()  # raises PoolingError if binaries missing / port busy
+        self._advertiser = WorkerAdvertiser(
+            port=self._settings.rpc_port, label="", budget_bytes=cap.offered_bytes
+        )
+        try:
+            self._advertiser.start()
+        except Exception as e:  # discovery is best-effort; worker still usable by IP
+            logger.warning("advertise_failed", error=str(e))
+        logger.info("worker_shared", address=self._worker.address)
+        return {"running": True, "address": self._worker.address}
+
+    def stop_worker(self) -> dict:
+        # Best-effort teardown: a failure unadvertising must not prevent the
+        # rpc-server from being stopped, and must never bubble a 500.
+        if self._advertiser is not None:
+            try:
+                self._advertiser.stop()
+            except Exception as e:
+                logger.warning("advertiser_stop_failed", error=str(e))
+            self._advertiser = None
+        if self._worker is not None:
+            try:
+                self._worker.stop()
+            except Exception as e:
+                logger.warning("worker_stop_failed", error=str(e))
+            self._worker = None
+        return {"running": False}
 
     def _init_local_node(self) -> None:
         """Register this machine as the local (coordinator) node."""
@@ -80,12 +123,27 @@ class PoolService:
             self._discovery.start()
         return self._discovery
 
-    def discover(self, auto_join: bool = False) -> list[dict]:
-        """List workers advertised on the LAN via mDNS. Optionally auto-join them."""
+    def discover(self, auto_join: bool = False, wait_seconds: float = 2.5) -> list[dict]:
+        """List workers advertised on the LAN via mDNS. Optionally auto-join them.
+
+        mDNS responses arrive asynchronously, so on the first scan we give the
+        browser a moment to collect answers (runs in a worker thread, so this
+        does not block the API event loop). Excludes this device itself.
+        """
+        fresh = self._discovery is None
         disc = self._ensure_discovery()
-        found = disc.list_workers()
+        if fresh and wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+        # Don't list this machine's own advertisement (when it's sharing) as a
+        # discoverable peer — match on our own LAN IP + rpc port.
+        my_ip = _local_ip()
+        my_port = self._settings.rpc_port
+
         results = []
-        for w in found:
+        for w in disc.list_workers():
+            if w.host == my_ip and w.port == my_port:
+                continue  # that's us
             if auto_join:
                 self.join(w.host, w.port, label=w.label, budget_bytes=w.budget_bytes or None)
             results.append(
@@ -148,6 +206,7 @@ class PoolService:
             "pooled_active": self._coordinator.is_running,
             "active_model": self._coordinator.model_id,
             "proxy_url": self.proxy_url,
+            "worker_running": self.worker_running,
             "node_count": len(nodes),
             "remote_count": len(self._state.remote_nodes()),
             "total_budget_gb": round(total / (1024**3), 2),

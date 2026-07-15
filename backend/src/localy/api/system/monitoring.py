@@ -75,10 +75,45 @@ async def get_model_fit(
     dependencies=[Depends(verify_api_key)],
 )
 async def get_system_models(
+    dynamic: bool = True,
     model_service: ModelService = Depends(get_model_service),
 ) -> list[dict[str, Any]]:
-    """Retrieve full registry catalog of models annotated with local status and fit assessments."""
-    return model_service.list_models()
+    """Full catalog with per-model quantization variants fetched live from HF (cached)."""
+    import asyncio
+
+    # Variant fetch may hit the network on a cache miss — run off the event loop.
+    return await asyncio.to_thread(model_service.list_models, dynamic)
+
+
+@system_router.get(
+    "/system/catalog/search",
+    dependencies=[Depends(verify_api_key)],
+)
+async def search_catalog(
+    q: str = "",
+    model_service: ModelService = Depends(get_model_service),
+) -> list[dict[str, Any]]:
+    """Search Hugging Face for GGUF models to add to the catalog."""
+    import asyncio
+
+    return await asyncio.to_thread(model_service.search_catalog, q, 20)
+
+
+@system_router.post(
+    "/system/catalog/add",
+    dependencies=[Depends(verify_api_key)],
+)
+async def add_catalog_model(
+    payload: dict[str, str],
+    model_service: ModelService = Depends(get_model_service),
+) -> dict[str, Any]:
+    """Add a Hugging Face GGUF repo to the catalog (all its variants become available)."""
+    import asyncio
+
+    repo_id = payload.get("repo_id", "").strip()
+    if not repo_id:
+        return {"error": "repo_id required"}
+    return await asyncio.to_thread(model_service.add_hf_model, repo_id)
 
 
 @system_router.post(
