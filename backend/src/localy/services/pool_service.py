@@ -52,7 +52,10 @@ class PoolService:
         self._worker = WorkerProcess(self._settings)
         self._worker.start()  # raises PoolingError if binaries missing / port busy
         self._advertiser = WorkerAdvertiser(
-            port=self._settings.rpc_port, label="", budget_bytes=cap.offered_bytes
+            port=self._settings.rpc_port,
+            label="",
+            budget_bytes=cap.offered_bytes,
+            compute_score=cap.compute_score,
         )
         try:
             self._advertiser.start()
@@ -89,12 +92,18 @@ class PoolService:
                 budget_bytes=cap.offered_bytes,
                 is_local=True,
                 label="This device",
+                compute_score=cap.compute_score,
             )
         )
 
     # --- membership ---
     def join(
-        self, host: str, port: int, label: str = "", budget_bytes: int | None = None
+        self,
+        host: str,
+        port: int,
+        label: str = "",
+        budget_bytes: int | None = None,
+        compute_score: float = 1.0,
     ) -> PoolNode:
         """Manually add a remote worker to the pool (Stage 1)."""
         node_id = f"{host}:{port}"
@@ -108,6 +117,7 @@ class PoolService:
             port=port,
             budget_bytes=budget_bytes,
             label=label or node_id,
+            compute_score=compute_score,
         )
         self._state.upsert(node)
         logger.info("pool_node_joined", address=node.address, budget_gb=round(node.budget_gb, 2))
@@ -145,7 +155,13 @@ class PoolService:
             if w.host == my_ip and w.port == my_port:
                 continue  # that's us
             if auto_join:
-                self.join(w.host, w.port, label=w.label, budget_bytes=w.budget_bytes or None)
+                self.join(
+                    w.host,
+                    w.port,
+                    label=w.label,
+                    budget_bytes=w.budget_bytes or None,
+                    compute_score=w.compute_score,
+                )
             results.append(
                 {
                     "node_id": w.node_id,

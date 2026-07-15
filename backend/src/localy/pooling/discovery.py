@@ -37,6 +37,7 @@ class DiscoveredWorker:
     port: int
     label: str
     budget_bytes: int
+    compute_score: float = 1.0
 
 
 def _local_ip() -> str:
@@ -54,10 +55,11 @@ def _local_ip() -> str:
 class WorkerAdvertiser:
     """Advertises this device as a pool worker over mDNS."""
 
-    def __init__(self, port: int, label: str, budget_bytes: int) -> None:
+    def __init__(self, port: int, label: str, budget_bytes: int, compute_score: float = 1.0) -> None:
         self._port = port
         self._label = label
         self._budget = budget_bytes
+        self._compute = compute_score
         self._zc: "Zeroconf | None" = None
         self._info: "ServiceInfo | None" = None
 
@@ -76,6 +78,7 @@ class WorkerAdvertiser:
             properties={
                 "label": self._label or hostname,
                 "budget": str(self._budget),
+                "compute": str(self._compute),
                 "node_id": f"{ip}:{self._port}",
             },
         )
@@ -108,12 +111,17 @@ class _PoolListener(ServiceListener):  # type: ignore[misc]
             for k, v in (info.properties or {}).items()
         }
         node_id = props.get("node_id", f"{ip}:{info.port}")
+        try:
+            compute = float(props.get("compute", "1") or 1)
+        except ValueError:
+            compute = 1.0
         self.workers[name] = DiscoveredWorker(
             node_id=node_id,
             host=ip,
             port=info.port,
             label=props.get("label", node_id),
             budget_bytes=int(props.get("budget", "0") or 0),
+            compute_score=compute,
         )
         self._on_change()
 

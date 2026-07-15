@@ -28,6 +28,7 @@ class WorkerCapacity:
     offered_bytes: int
     total_bytes: int
     cpu_threads: int
+    compute_score: float = 1.0  # relative inference speed for shard weighting
 
     @property
     def offered_mib(self) -> int:
@@ -43,10 +44,18 @@ def compute_local_capacity(settings: Settings) -> WorkerCapacity:
     report = run_full_probe(settings.models_path)
     safe = report.memory.safe_model_budget_bytes
     offered = int(safe * POOL_MEMORY_OFFER_FRACTION)
+    threads = report.cpu.recommended_generation_threads
+    # Rough CPU-inference speed proxy for shard weighting: generation threads
+    # scaled by SIMD width (AVX-512 > AVX2 > baseline). A real benchmark tok/s
+    # would be better, but this cheaply ranks a fast PC above a phone.
+    simd = getattr(report.instruction_sets, "best_available_simd", "") or ""
+    simd_factor = 2.0 if "512" in simd else 1.5 if "avx2" in simd.lower() else 1.0
+    compute_score = max(1.0, threads * simd_factor)
     return WorkerCapacity(
         offered_bytes=offered,
         total_bytes=report.memory.total_bytes,
-        cpu_threads=report.cpu.recommended_generation_threads,
+        cpu_threads=threads,
+        compute_score=compute_score,
     )
 
 

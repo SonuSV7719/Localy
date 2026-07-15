@@ -43,7 +43,9 @@ def worker(
     offer_mib = mem or cap.offered_mib
 
     proc = WorkerProcess(settings)
-    advertiser = WorkerAdvertiser(port=bind_port, label="", budget_bytes=cap.offered_bytes)
+    advertiser = WorkerAdvertiser(
+        port=bind_port, label="", budget_bytes=cap.offered_bytes, compute_score=cap.compute_score
+    )
     console.print("\n[bold blue]🔗 Localy Pool Worker[/bold blue]\n")
     console.print(f"  Offering:  {offer_mib} MiB (~{offer_mib/1024:.1f} GB) of memory")
     console.print(f"  Listening: {settings.rpc_bind_host}:{bind_port}")

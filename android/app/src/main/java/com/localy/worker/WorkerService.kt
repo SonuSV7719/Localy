@@ -69,7 +69,10 @@ class WorkerService : Service() {
         advertiser.register(
             port = RpcWorker.DEFAULT_PORT,
             label = Build.MODEL ?: "Android",
-            budgetBytes = cap.offeredBytes
+            budgetBytes = cap.offeredBytes,
+            // Phones are slow nodes — advertise a modest compute score so the
+            // coordinator assigns them fewer layers (less pipeline bottleneck).
+            computeScore = cap.threads.toDouble()
         )
 
         acquireWakeLock()

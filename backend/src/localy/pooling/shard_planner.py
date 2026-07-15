@@ -30,6 +30,7 @@ class PoolNode:
     budget_bytes: int  # usable memory this node offers (safe_model_budget-derived)
     is_local: bool = False  # True for the coordinator's own machine
     label: str = ""
+    compute_score: float = 1.0  # relative inference speed (threads x SIMD, or tok/s)
 
     @property
     def address(self) -> str:
@@ -82,6 +83,42 @@ class ShardPlan:
         }
 
 
+def _water_fill(caps: list[float], weights: list[float], total: float) -> list[float]:
+    """Distribute `total` across items proportional to `weights`, capped by `caps`.
+
+    Water-filling: allocate by weight; when an item hits its cap, freeze it and
+    redistribute the remainder among the rest. Guarantees alloc[i] <= caps[i] and
+    sum(alloc) == min(total, sum(caps)). With equal weights this reduces to
+    RAM-proportional; with unequal weights, faster devices get more (up to RAM).
+    """
+    n = len(caps)
+    alloc = [0.0] * n
+    active = [i for i in range(n) if caps[i] > 0]
+    remaining = min(total, sum(caps))
+    while remaining > 1.0 and active:
+        wsum = sum(weights[i] for i in active)
+        if wsum <= 0:
+            break
+        capped_now = []
+        added_total = 0.0
+        for i in list(active):
+            give = remaining * (weights[i] / wsum)
+            room = caps[i] - alloc[i]
+            if give >= room:
+                alloc[i] = caps[i]
+                added_total += room
+                capped_now.append(i)
+            else:
+                alloc[i] += give
+                added_total += give
+        remaining -= added_total
+        if capped_now:
+            active = [i for i in active if i not in capped_now]
+        else:
+            break  # everyone within caps — done
+    return alloc
+
+
 def plan_shards(nodes: list[PoolNode], model_size_bytes: int) -> ShardPlan:
     """Plan how to split `model_size_bytes` of weights across `nodes`.
 
@@ -104,9 +141,17 @@ def plan_shards(nodes: list[PoolNode], model_size_bytes: int) -> ShardPlan:
     required = int(model_size_bytes * _MODEL_OVERHEAD_FACTOR)
     fits = total_budget >= required and total_budget > 0
 
-    # Weight each node's layer share by its memory budget.
-    if total_budget > 0:
-        tensor_split = [n.budget_bytes / total_budget for n in nodes]
+    # Compute-aware water-filling: give faster devices MORE layers (so a slow
+    # node doesn't bottleneck the pipeline), but never assign a device more than
+    # its RAM can hold. Falls back to pure RAM-proportional when all devices
+    # report equal compute. See _water_fill.
+    caps = [max(0, n.budget_bytes) for n in nodes]
+    weights = [max(1e-6, n.compute_score) for n in nodes]
+    to_place = min(required, total_budget) if total_budget > 0 else 0
+    alloc = _water_fill(caps, weights, to_place)
+    placed = sum(alloc)
+    if placed > 0:
+        tensor_split = [a / placed for a in alloc]
     else:
         tensor_split = [1.0 / len(nodes)] * len(nodes)
 
@@ -118,7 +163,8 @@ def plan_shards(nodes: list[PoolNode], model_size_bytes: int) -> ShardPlan:
     if fits:
         reason = (
             f"Model (~{model_gb:.1f} GB) fits across {len(nodes)} device(s) "
-            f"(~{budget_gb:.1f} GB pooled). Layers weighted by each device's memory."
+            f"(~{budget_gb:.1f} GB pooled). Layers weighted by each device's speed, "
+            f"capped by its memory."
         )
         if n_remote > 0:
             recommendations.append(
