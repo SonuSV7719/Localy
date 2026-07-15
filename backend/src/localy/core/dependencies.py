@@ -5,10 +5,10 @@ Localy FastAPI dependency injection providers.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from fastapi import Depends, Security
+from fastapi import Depends, HTTPException, Request, status
 
+from localy.core.api_keys import get_key_store
 from localy.core.config import Settings, get_settings
-from localy.core.security import create_api_key_validator
 
 if TYPE_CHECKING:
     from localy.hardware.report import HardwareReport
@@ -22,19 +22,69 @@ _model_store: ModelStore | None = None
 _model_service: ModelService | None = None
 
 
-def get_api_key_validator(
-    settings: Settings = Depends(get_settings),
-):
-    """Dependency to get API key validator."""
-    return create_api_key_validator(settings)
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _extract_key(request: Request) -> str | None:
+    """Pull an API key from Authorization: Bearer … or X-API-Key."""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-api-key") or None
+
+
+def _is_proxied(request: Request) -> bool:
+    """True if the request came through a reverse proxy / tunnel.
+
+    Cloudflare (and other tunnels) forward to 127.0.0.1 but add forwarding
+    headers. Without this check, tunneled requests would look loopback and
+    bypass the key — so any forwarded request must present a key.
+    """
+    h = request.headers
+    return bool(
+        h.get("x-forwarded-for")
+        or h.get("cf-connecting-ip")
+        or h.get("forwarded")
+        or h.get("x-real-ip")
+    )
 
 
 async def verify_api_key(
+    request: Request,
     settings: Settings = Depends(get_settings),
-    api_key_header: str | None = Security(create_api_key_validator(get_settings())),
 ) -> str | None:
-    """Dependency to verify API key."""
-    return api_key_header
+    """Gate remote access. Genuine loopback (the app itself) is exempt; every
+    LAN / internet / tunneled request must present a valid API key. Fail-closed:
+    if no keys exist, non-loopback access is denied.
+    """
+    client = request.client.host if request.client else ""
+    if client in _LOOPBACK_HOSTS and not _is_proxied(request):
+        return None  # local app / CLI — always allowed
+
+    key = _extract_key(request)
+    store = get_key_store(settings.config_path)
+    if store.is_valid(key) or (settings.api_key and key == settings.api_key):
+        return key
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="A valid API key is required for remote access. Generate one in the Localy app.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def require_local(request: Request) -> None:
+    """Restrict an endpoint to loopback callers only (the app on this machine).
+
+    Used for management endpoints (API keys, tunnels) so a remote key holder
+    can never mint keys or change exposure — only the local owner can.
+    """
+    client = request.client.host if request.client else ""
+    if client not in _LOOPBACK_HOSTS or _is_proxied(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action is only allowed from the Localy app on the host machine.",
+        )
 
 
 def get_hardware_report(

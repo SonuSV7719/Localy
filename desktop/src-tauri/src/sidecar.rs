@@ -46,7 +46,9 @@ pub fn start_sidecar(app: &AppHandle) {
     println!("🚀 Spawning bundled localy-backend: {}", backend_exe.display());
 
     let mut cmd = Command::new(&backend_exe);
-    cmd.arg("serve");
+    // Bind 0.0.0.0 so LAN clients and the internet tunnel can reach the API.
+    // Non-loopback requests are gated by API key (fail-closed), so this is safe.
+    cmd.arg("serve").arg("--host").arg("0.0.0.0");
     if let Some(dir) = &rpc_dir {
         cmd.env("LOCALY_LLAMA_BIN_DIR", dir);
     }

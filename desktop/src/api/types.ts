@@ -185,3 +185,20 @@ export interface DiscoveredWorker {
   label: string;
   budget_gb: number | null;
 }
+
+// --- API access ---
+
+export interface ApiKeyMasked {
+  id: string;
+  label: string;
+  created: number;
+  masked: string;
+}
+
+export interface AccessInfo {
+  lan_url: string;
+  local_url: string;
+  port: number;
+  keys: ApiKeyMasked[];
+  tunnel: { running: boolean; url: string | null };
+}

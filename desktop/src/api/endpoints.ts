@@ -8,6 +8,7 @@ import {
   PoolStatus,
   ShardPlan,
   DiscoveredWorker,
+  AccessInfo,
 } from "./types";
 
 export const api = {
@@ -138,5 +139,32 @@ export const api = {
   /** Stop sharing this device. */
   async stopWorker(): Promise<{ running: boolean }> {
     return apiClient.post<{ running: boolean }>("/pool/worker/stop", {});
+  },
+
+  // --- API access (keys + internet tunnel) ---
+
+  /** LAN/local URLs, keys, and tunnel status for the API Access panel. */
+  async getAccess(): Promise<AccessInfo> {
+    return apiClient.get<AccessInfo>("/system/access");
+  },
+
+  /** Generate a new API key. The full `key` is returned once — copy it now. */
+  async createKey(label: string): Promise<{ id: string; key: string; label: string }> {
+    return apiClient.post<{ id: string; key: string; label: string }>("/system/keys", { label });
+  },
+
+  /** Revoke an API key by id. */
+  async revokeKey(id: string): Promise<{ revoked: boolean }> {
+    return apiClient.delete<{ revoked: boolean }>(`/system/keys/${id}`);
+  },
+
+  /** Start the Cloudflare internet tunnel; returns the public URL. */
+  async startTunnel(): Promise<{ running: boolean; url: string | null }> {
+    return apiClient.post<{ running: boolean; url: string | null }>("/system/tunnel/start", {});
+  },
+
+  /** Stop the internet tunnel. */
+  async stopTunnel(): Promise<{ running: boolean }> {
+    return apiClient.post<{ running: boolean }>("/system/tunnel/stop", {});
   },
 };

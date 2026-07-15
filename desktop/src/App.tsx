@@ -3,11 +3,12 @@ import { SetupPage } from "./pages/SetupPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { PoolPage } from "./pages/PoolPage";
+import { ApiAccessPage } from "./pages/ApiAccessPage";
 import { api } from "./api/endpoints";
 
 function App() {
   const [setupCompleted, setSetupCompleted] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"chat" | "models" | "pool">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "models" | "pool" | "api">("chat");
   const [isServerHealthy, setIsServerHealthy] = useState<boolean>(false);
   const [hardwareSummary, setHardwareSummary] = useState<string>("Detecting...");
 
@@ -90,6 +91,17 @@ function App() {
           >
             <span style={styles.menuIcon}>🔗</span> Device Pool
           </div>
+
+          <div
+            onClick={() => setActiveTab("api")}
+            style={{
+              ...styles.menuItem,
+              background: activeTab === "api" ? "rgba(99, 102, 241, 0.1)" : "transparent",
+              color: activeTab === "api" ? "#fff" : "var(--text-secondary)"
+            }}
+          >
+            <span style={styles.menuIcon}>🔌</span> API Access
+          </div>
         </div>
 
         {/* Bottom Panel Status & Hardware Specs */}
@@ -116,6 +128,7 @@ function App() {
         {activeTab === "chat" && <ChatPage />}
         {activeTab === "models" && <ModelsPage />}
         {activeTab === "pool" && <PoolPage />}
+        {activeTab === "api" && <ApiAccessPage />}
       </div>
 
     </div>

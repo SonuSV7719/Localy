@@ -13,6 +13,7 @@ from localy.core.config import get_settings
 from localy.core.dependencies import (
     get_hardware_report,
     get_model_service,
+    require_local,
     verify_api_key,
 )
 from localy.schemas.hardware import HardwareReportResponse, FitAssessmentResponse
@@ -144,3 +145,65 @@ async def get_benchmark_history(
     settings = get_settings()
     benchmark_service = BenchmarkService(settings, model_service)
     return benchmark_service.get_history()
+
+
+# ===========================
+# API access: keys + tunnel (management is loopback-only)
+# ===========================
+
+
+@system_router.get("/system/access", dependencies=[Depends(require_local)])
+async def get_access() -> dict[str, Any]:
+    """Everything the app needs to show the API Access panel."""
+    from localy.core.api_keys import get_key_store
+    from localy.network.tunnel import get_tunnel_manager
+    from localy.pooling.discovery import _local_ip
+
+    settings = get_settings()
+    ip = _local_ip()
+    port = settings.port
+    return {
+        "lan_url": f"http://{ip}:{port}/v1",
+        "local_url": f"http://127.0.0.1:{port}/v1",
+        "port": port,
+        "keys": get_key_store(settings.config_path).list_masked(),
+        "tunnel": get_tunnel_manager(settings).status(),
+    }
+
+
+@system_router.post("/system/keys", dependencies=[Depends(require_local)])
+async def create_key(payload: dict[str, str]) -> dict[str, Any]:
+    """Generate a new API key. The full key is returned ONCE — copy it now."""
+    from localy.core.api_keys import get_key_store
+
+    settings = get_settings()
+    return get_key_store(settings.config_path).generate(payload.get("label", ""))
+
+
+@system_router.delete("/system/keys/{key_id}", dependencies=[Depends(require_local)])
+async def revoke_key(key_id: str) -> dict[str, bool]:
+    """Revoke an API key."""
+    from localy.core.api_keys import get_key_store
+
+    settings = get_settings()
+    return {"revoked": get_key_store(settings.config_path).revoke(key_id)}
+
+
+@system_router.post("/system/tunnel/start", dependencies=[Depends(require_local)])
+async def tunnel_start() -> dict[str, Any]:
+    """Expose the API to the internet via a Cloudflare quick tunnel."""
+    import asyncio
+
+    from localy.network.tunnel import get_tunnel_manager
+
+    settings = get_settings()
+    mgr = get_tunnel_manager(settings)
+    return await asyncio.to_thread(mgr.start, settings.port)
+
+
+@system_router.post("/system/tunnel/stop", dependencies=[Depends(require_local)])
+async def tunnel_stop() -> dict[str, Any]:
+    """Stop the internet tunnel."""
+    from localy.network.tunnel import get_tunnel_manager
+
+    return get_tunnel_manager(get_settings()).stop()

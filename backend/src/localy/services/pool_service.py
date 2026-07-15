@@ -175,8 +175,18 @@ class PoolService:
 
     # --- planning ---
     def _model_size_bytes(self, model_id: str) -> int:
-        path = self._manager.get_local_model_path(model_id)  # raises if not downloaded
-        return path.stat().st_size
+        # Prefer the downloaded file's real size; otherwise use the registry
+        # variant's advertised size so "check fit" works BEFORE downloading.
+        try:
+            path = self._manager.get_local_model_path(model_id)
+            return path.stat().st_size
+        except Exception:
+            _entry, variant = self._manager.registry.resolve(model_id)
+            if variant.file_size_bytes:
+                return variant.file_size_bytes
+            raise PoolingError(
+                f"Can't determine the size of '{model_id}' — download it first to check fit."
+            )
 
     def plan_for_model(self, model_id: str) -> ShardPlan:
         """Compute the shard plan for a model across the current pool."""
