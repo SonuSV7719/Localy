@@ -6,12 +6,28 @@ Localy serves HTTP REST APIs locally at `http://127.0.0.1:11434` by default. It 
 
 ## Global Headers & Security
 
-By default, Localy binds strictly to `127.0.0.1` and does not require an API key for local developer usage.
-If configured with an API key, all calls must include the authorization header:
+The desktop app binds the server to `0.0.0.0` so devices on the network (and an
+optional internet tunnel) can reach it, but access is **gated by API key**:
+
+- **Loopback requests** (from the app/CLI on the same machine, no proxy headers)
+  need no key — local use always works.
+- **Every LAN / internet / tunneled request** must present a valid key. This is
+  **fail-closed**: if no keys exist, non-loopback access is denied. Proxied
+  requests (with `X-Forwarded-For` / `Cf-Connecting-Ip`) always require a key,
+  so a tunnel can't bypass auth by arriving on `127.0.0.1`.
+- **Management endpoints** (`/system/keys`, `/system/tunnel/*`,
+  `/system/downloads/start|cancel`) are **loopback-only** — a remote key holder
+  cannot mint keys or change exposure.
+
+Send the key as either header:
 
 ```http
 Authorization: Bearer <your_api_key>
+X-API-Key: <your_api_key>
 ```
+
+Generate/revoke keys and start the internet tunnel from the app's **API Access**
+tab, or via the endpoints in section 4 below.
 
 ---
 
@@ -327,3 +343,63 @@ Triggers a standardized generation pass to benchmark local tokens/sec capabiliti
   "hardware_hash": "a5f8e12d..."
 }
 ```
+
+---
+
+## 4. API Access — Keys & Internet Tunnel
+
+Manage remote access. **Loopback-only** (the app on the host machine).
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/system/access` | GET | LAN/local URLs, key list (masked), tunnel status |
+| `/system/keys` | POST | Generate a key (full key returned once) — body `{"label": "..."}` |
+| `/system/keys/{id}` | DELETE | Revoke a key |
+| `/system/tunnel/start` | POST | Start a Cloudflare quick tunnel → `{"running": true, "url": "https://<sub>.trycloudflare.com"}` |
+| `/system/tunnel/stop` | POST | Stop the tunnel |
+
+Remote users then call the normal `/v1/*` or `/api/*` endpoints at the LAN URL
+(`http://<host-ip>:11434/v1`) or the tunnel URL, with their key.
+
+---
+
+## 5. Device Pooling (Phase 3)
+
+Run a model split across multiple devices on the LAN/hotspot (llama.cpp RPC).
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/pool/status` | GET | Pool membership + coordinator state |
+| `/pool/discover?auto_join=` | GET | mDNS-discovered workers (optionally auto-join) |
+| `/pool/join` | POST | Add a worker — body `{"host","port","label"}` |
+| `/pool/leave` | POST | Remove a worker — body `{"node_id"}` |
+| `/pool/worker/start` \| `/pool/worker/stop` | POST | Share / stop sharing THIS device |
+| `/pool/fit/{model}` \| `/pool/plan/{model}` | GET | Does it fit across the pool + memory/speed-weighted layer split |
+| `/pool/load` | POST | Load a model across the pool — body `{"model","ctx"}` |
+| `/pool/unload` | POST | Stop pooled inference |
+
+Once loaded, the pooled model is served transparently through `/v1/chat/completions`.
+
+---
+
+## 6. Background Downloads
+
+Downloads run server-side (survive UI navigation); poll for progress.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/system/downloads/start` | POST | Start/resume — body `{"model"}` (loopback-only) |
+| `/system/downloads` | GET | Progress: `[{model_id, status, completed, total, speed_mbps}]` |
+| `/system/downloads/cancel` | POST | Cancel — body `{"model"}` (partial kept for resume) |
+
+Downloads are parallel, atomic (`.part` → rename), and resumable.
+
+---
+
+## 7. Dynamic Catalog (Hugging Face)
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/system/models?dynamic=true` | GET | Catalog with all quant variants fetched live from HF |
+| `/system/catalog/search?q=` | GET | Search HF for GGUF models |
+| `/system/catalog/add` | POST | Add an HF repo to the catalog — body `{"repo_id"}` (loopback-only) |

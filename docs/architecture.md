@@ -89,7 +89,7 @@ The auto-tuning engine bridges the gap between hardware detection and inference 
 
 ---
 
-## 2. Phase 2: App & Server Gateway
+## 2. Phase 2: App & Server Gateway (implemented)
 
 Localy packages the core engine into a lightweight desktop application:
 
@@ -106,13 +106,37 @@ Uses **Tauri v2** over Electron for the desktop wrapper.
 
 ---
 
-## 3. Phase 3: LAN Device Pooling (Compute Sharding)
+## 3. Phase 3: LAN Device Pooling (implemented)
 
-When a model size exceeds local memory capability, Localy scales horizontally:
+When a model exceeds local memory, Localy scales horizontally by **orchestrating
+llama.cpp's RPC backend** (not a custom inference kernel):
 
-- **Auto-Discovery (`localy.pooling.discovery`)**: Uses multicast DNS (mDNS) via standard protocols to discover other Localy instances running on the local network.
-- **Pipeline Parallelism (`localy.pooling.shard_planner`)**: Distributes model layers in a sequential pipeline across available devices. If Device A has 16GB RAM and Device B has 8GB RAM, Device A is assigned a larger slice of model layers.
-- **gRPC Transport**: Transfers intermediate activation tensors between nodes over TCP/IP, compressing data to optimize throughput over typical Wi-Fi and Ethernet environments.
+- **Coordinator/Worker (`localy.pooling.coordinator`, `localy.pooling.worker`)**:
+  A worker runs `ggml-rpc-server` (needs no model file). The coordinator runs
+  `llama-server --rpc host:port,… --tensor-split …`, holds the GGUF, and streams
+  each device's layers to it. Localy proxies its normal chat routes to the
+  coordinator, so a pooled model is served through the same API as solo.
+- **Auto-Discovery (`localy.pooling.discovery`)**: mDNS (`zeroconf`,
+  `_localy._tcp`) so workers on the same WiFi/hotspot appear automatically; the
+  Android worker advertises the same way.
+- **Shard planning (`localy.pooling.shard_planner`)**: compute-aware
+  water-filling — layers weighted by each device's speed, **capped by its RAM**,
+  across any number of devices. Workers use `--cache` so weights aren't
+  re-streamed on reconnect.
+- **Security**: the RPC backend is insecure/LAN-only by design — used only on a
+  trusted local network; internet exposure is Phase 4 (encrypted tunnel).
+
+## 3b. API Access, Dynamic Catalog & Downloads (implemented)
+
+- **API access (`localy.core.api_keys`, `localy.network.tunnel`)**: OpenAI/Ollama
+  APIs are key-gated for remote callers; the app can expose them on the LAN or
+  over a **Cloudflare quick tunnel**. See the Security Model below.
+- **Dynamic catalog (`localy.inference.hf_catalog`)**: quantization variants are
+  fetched live from Hugging Face (cached, offline fallback); users can search HF
+  and add any GGUF model.
+- **Background downloads (`localy.services.download_manager`, `localy.utils.download`)**:
+  parallel, atomic (`.part`→rename), and resumable; run server-side so they
+  survive UI navigation.
 
 ---
 
@@ -126,6 +150,14 @@ Designed for future scale, Phase 4 separates remote pooling into two tiers:
 
 ## Security Model
 
-1. **Host Binding**: The web server binds explicitly to `127.0.0.1` by default. There is no external network exposure of the API ports unless explicitly configured.
-2. **Local Processing**: Model weights, prompt inputs, and generation buffers remain entirely local to the user's filesystem and RAM.
-3. **No Dynamic Code execution**: Model weight files (`.gguf`) are verified using SHA-256 hashes upon download to prevent arbitrary injection.
+1. **Key-gated access**: The server binds `0.0.0.0` so LAN/tunnel clients can
+   reach it, but non-loopback requests require a valid API key (fail-closed).
+   Loopback (the app itself) is exempt; proxied requests always require a key so
+   a tunnel can't bypass auth; management endpoints are loopback-only.
+2. **Local Processing**: Model weights, prompts, and generation buffers stay on
+   the user's own filesystem/RAM (or, in pooled mode, across the user's trusted
+   LAN devices).
+3. **RPC is LAN-only**: `ggml-rpc-server` is insecure by design and is only used
+   on a trusted local network — never exposed directly to the internet.
+4. **Integrity**: `.gguf` downloads are atomic (`.part`→rename) and verified via
+   SHA-256 when a hash is available.
