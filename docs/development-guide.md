@@ -59,6 +59,40 @@ uv run localy serve
 
 ---
 
+## 2b. Building Native Binaries & the Installer
+
+Some features need binaries compiled from source (they are not on PyPI / not
+shippable prebuilt). All scripts run from the **repo root**; outputs are
+gitignored and regenerated on demand.
+
+| Script | Produces | Needs |
+|---|---|---|
+| `scripts\build-llama-rpc.bat` | `backend/vendor/llama-rpc/` — RPC-enabled `ggml-rpc-server` + `llama-server` (for device pooling) | VS 2022 C++ toolchain (bundled MSVC/CMake/Ninja) |
+| `scripts\build-android-rpc.bat` | `android/.../jniLibs/arm64-v8a/libggml-rpc-server.so` (the Android worker's native binary) | Android NDK (r27) |
+| `scripts\build-backend-exe.bat` | `backend/packaging/dist/localy-backend/` — the backend bundled with PyInstaller (no Python needed on target) | PyInstaller in the venv |
+
+**Full Windows installer** (bundles the backend + RPC binaries + `cloudflared`):
+
+```powershell
+# 1. Build the RPC binaries and the backend exe (once / when backend changes)
+scripts\build-llama-rpc.bat
+scripts\build-backend-exe.bat
+# 2. Copy into Tauri resources, then build the NSIS installer
+#    (resources: desktop/src-tauri/resources/{backend,llama-rpc})
+cd desktop
+npx tauri build --bundles nsis
+# -> desktop/src-tauri/target/release/bundle/nsis/Localy_0.1.0_x64-setup.exe
+```
+
+The Android worker APK is built from `android/` (`./gradlew :app:assembleDebug`)
+— see `android/README.md`.
+
+> **CPU note:** use the AVX2 `llama-cpp-python` wheel (CPU index), not the
+> default one — the default requires AVX-512 and crashes with an illegal
+> instruction on 12th-gen Intel and other AVX2-only CPUs.
+
+---
+
 ## 3. Running Tests
 
 To avoid rebuilding the project wheel during development cycles, run tests directly using python with the `src` directory inserted into `sys.path`.
@@ -106,7 +140,12 @@ uv run mypy src
 
 1. **Keep Imports Dynamic When Heavy**:
    Modules like `llama_cpp` are heavy and might take hundreds of milliseconds to import. To keep CLI command responsiveness instantaneous (under 50ms startup), delay importing heavy packages until they are explicitly needed in target function scopes.
-2. **Local Security Bindings**:
-   Always ensure any newly introduced endpoints or service transports (e.g. gRPC ports in Phase 3) bind only to `127.0.0.1` by default to prevent unauthorized network queries.
+2. **Access Control**:
+   The API server binds `0.0.0.0` so LAN/tunnel clients can reach it, but every
+   non-loopback request is gated by an API key (fail-closed). Any new endpoint
+   must apply `verify_api_key` (or `require_local` for management actions), and
+   must treat proxied requests (`X-Forwarded-For`/`Cf-Connecting-Ip`) as remote
+   so tunnels can't bypass auth. The RPC worker (`ggml-rpc-server`) is LAN-only
+   and insecure by design — never expose it directly to the internet.
 3. **Mocks & Hardware Reports**:
    When writing tests that execute engine code or hardware probes, always mock dependencies to prevent multi-gigabyte downloads or platform-specific OS errors on execution targets.
