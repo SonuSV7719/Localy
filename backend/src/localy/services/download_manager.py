@@ -88,8 +88,8 @@ class DownloadManager:
             logger.info("download_cancelled_bg", model=model_id)
         except Exception as e:  # noqa: BLE001
             self._state[model_id]["status"] = "error"
-            self._state[model_id]["error"] = str(e)
-            logger.error("download_error_bg", model=model_id, error=str(e))
+            self._state[model_id]["error"] = str(e) or repr(e)
+            logger.error("download_error_bg", model=model_id, error=repr(e))
         finally:
             self._tasks.pop(model_id, None)
             self._cancel.pop(model_id, None)

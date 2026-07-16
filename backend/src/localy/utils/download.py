@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 ProgressCallback = Callable[[int, int, float], None]
 
 _CHUNK_SIZE = 32 * 1024 * 1024  # 32 MB per resumable chunk
-_DEFAULT_CONNECTIONS = 6
+_DEFAULT_CONNECTIONS = 4  # fewer parallel connections = fewer CDN resets
 
 
 async def _probe(url: str, timeout: int) -> tuple[int, bool]:
@@ -56,19 +56,36 @@ async def _download_chunk(
     end: int,
     on_bytes: Callable[[int], None],
     cancel_check: Callable[[], bool] | None,
+    max_retries: int = 5,
 ) -> None:
-    """Download byte range [start, end] into `part` at the right offset."""
+    """Download byte range [start, end] into `part`, retrying transient errors.
+
+    Parallel connections to a CDN frequently get reset — retry each chunk with
+    backoff so one dropped connection doesn't fail the whole download.
+    """
     headers = {"Range": f"bytes={start}-{end}"}
-    async with client.stream("GET", url, headers=headers) as resp:
-        if resp.status_code not in (200, 206):
-            raise DownloadError(f"HTTP {resp.status_code} for chunk {index}")
-        with part.open("r+b") as f:
-            f.seek(start)
-            async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
-                if cancel_check and cancel_check():
-                    raise DownloadCancelledError("cancelled")
-                f.write(chunk)
-                on_bytes(len(chunk))
+    for attempt in range(max_retries):
+        written = 0
+        try:
+            async with client.stream("GET", url, headers=headers) as resp:
+                if resp.status_code not in (200, 206):
+                    raise DownloadError(f"HTTP {resp.status_code} for chunk {index}")
+                with part.open("r+b") as f:
+                    f.seek(start)
+                    async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                        if cancel_check and cancel_check():
+                            raise DownloadCancelledError("cancelled")
+                        f.write(chunk)
+                        written += len(chunk)
+                        on_bytes(len(chunk))
+            return
+        except DownloadCancelledError:
+            raise
+        except Exception as e:  # network reset, timeout, etc.
+            on_bytes(-written)  # roll back this attempt's progress before retrying
+            if attempt == max_retries - 1:
+                raise DownloadError(f"chunk {index} failed after {max_retries} tries: {e!r}") from e
+            await asyncio.sleep(1.5 * (attempt + 1))
 
 
 async def download_file(
