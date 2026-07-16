@@ -91,10 +91,25 @@ Localy does **not** reimplement inference. It wraps llama.cpp and adds:
 
 ## Build Phases
 
-- **Phase 1** (Current): Speed engine — auto-tuned single-machine inference ✅
-- **Phase 2**: Desktop app — Tauri shell with chat UI
-- **Phase 3**: Device pooling — combine LAN devices for bigger models
+- **Phase 1**: Speed engine — auto-tuned single-machine inference ✅
+- **Phase 2**: Desktop app — Tauri app (chat, model catalog, one-click installer) ✅
+- **Phase 3**: Device pooling — combine LAN/hotspot devices for bigger models ✅
 - **Phase 4**: Internet pooling — friends-only, then open network (scope only)
+
+## Features
+
+- **Desktop app** (Tauri + React): onboarding, streaming chat with sessions, and a
+  one-click Windows installer that bundles the backend (no Python needed).
+- **Dynamic model catalog**: every quantization variant is pulled live from
+  Hugging Face with real sizes; search and add any GGUF model.
+- **Background downloads**: parallel, resumable, atomic — keep running across tab
+  switches, with live speed/ETA and cancel.
+- **Device pooling**: run models too large for one machine by splitting layers
+  across any number of devices on the same WiFi/hotspot (llama.cpp RPC backend),
+  weighted by each device's speed and memory. Includes a **zero-setup Android
+  worker app** (install, tap Connect).
+- **API access**: OpenAI-compatible API for other apps/people — generate API
+  keys, expose on the LAN, or over the internet via a Cloudflare tunnel.
 
 See [docs/vision-and-roadmap.md](docs/vision-and-roadmap.md) for the full pooling vision (share models across a friend group over WiFi/hotspot/internet), the honest "why pooling ≠ faster" reasoning, and the differentiating features.
 
