@@ -148,6 +148,38 @@ async def get_benchmark_history(
 
 
 # ===========================
+# Background downloads (run server-side; survive UI navigation)
+# ===========================
+
+
+@system_router.post("/system/downloads/start", dependencies=[Depends(require_local)])
+async def download_start(payload: dict[str, str]) -> dict[str, Any]:
+    """Start (or resume) a background download. Returns immediately."""
+    from localy.services.download_manager import get_download_manager
+
+    model = payload.get("model", "").strip()
+    if not model:
+        return {"error": "model required"}
+    return get_download_manager(get_settings()).start(model)
+
+
+@system_router.get("/system/downloads", dependencies=[Depends(verify_api_key)])
+async def download_status() -> list[dict[str, Any]]:
+    """Progress of all downloads this session (poll this from the UI)."""
+    from localy.services.download_manager import get_download_manager
+
+    return get_download_manager(get_settings()).status()
+
+
+@system_router.post("/system/downloads/cancel", dependencies=[Depends(require_local)])
+async def download_cancel(payload: dict[str, str]) -> dict[str, Any]:
+    """Cancel a background download (the partial file is kept for resume)."""
+    from localy.services.download_manager import get_download_manager
+
+    return get_download_manager(get_settings()).cancel(payload.get("model", ""))
+
+
+# ===========================
 # API access: keys + tunnel (management is loopback-only)
 # ===========================
 

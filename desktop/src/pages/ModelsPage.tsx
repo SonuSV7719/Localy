@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
-import { apiClient } from "../api/client";
 import { RegistryModel, FitAssessment } from "../api/types";
 import { DownloadProgress } from "../components/DownloadProgress";
-import { DownloadTracker, ProgressStats } from "../lib/downloadTracker";
+import { ProgressStats } from "../lib/downloadTracker";
 
 export const ModelsPage: React.FC = () => {
   const [models, setModels] = useState<RegistryModel[]>([]);
@@ -21,7 +20,8 @@ export const ModelsPage: React.FC = () => {
   const [downloads, setDownloads] = useState<{
     [modelId: string]: { stats: ProgressStats | null; status: string };
   }>({});
-  const trackers = useRef<{ [modelId: string]: DownloadTracker }>({});
+  const startTimes = useRef<{ [modelId: string]: number }>({});
+  const refreshed = useRef<Set<string>>(new Set());
 
   // Hugging Face search / add state
   const [hfQuery, setHfQuery] = useState<string>("");
@@ -31,7 +31,47 @@ export const ModelsPage: React.FC = () => {
 
   useEffect(() => {
     fetchCatalog();
+    // Poll server-side download progress. Downloads run in the backend, so this
+    // keeps working across tab switches — leaving/returning just resumes the view.
+    const timer = setInterval(pollDownloads, 1500);
+    return () => clearInterval(timer);
   }, []);
+
+  const pollDownloads = async () => {
+    try {
+      const dls = await api.getDownloads();
+      const next: { [id: string]: { stats: ProgressStats | null; status: string } } = {};
+      const finished: string[] = [];
+      for (const d of dls) {
+        if (d.status === "downloading") {
+          const speedBps = d.speed_mbps * 1024 * 1024;
+          const eta = speedBps > 0 && d.total ? (d.total - d.completed) / speedBps : Infinity;
+          const start = startTimes.current[d.model_id] || Date.now();
+          next[d.model_id] = {
+            status: "downloading",
+            stats: {
+              completed: d.completed,
+              total: d.total,
+              percent: d.total ? (d.completed / d.total) * 100 : 0,
+              speedBps,
+              etaSeconds: eta,
+              elapsedSeconds: (Date.now() - start) / 1000,
+            },
+          };
+        } else if (!refreshed.current.has(d.model_id)) {
+          refreshed.current.add(d.model_id);
+          finished.push(d.status === "error" ? `error:${d.error}` : d.status);
+        }
+      }
+      setDownloads(next);
+      if (finished.length) {
+        finished.forEach((f) => f.startsWith("error:") && alert(`Download failed: ${f.slice(6)}`));
+        fetchCatalog();
+      }
+    } catch {
+      /* backend momentarily unreachable */
+    }
+  };
 
   const searchHF = async () => {
     setHfBusy("search");
@@ -111,47 +151,28 @@ export const ModelsPage: React.FC = () => {
     }
   };
 
-  // Perform model download with full streaming analytics.
+  // Start a background download (runs server-side; keeps going across tabs).
   const handleDownload = async (modelId: string) => {
-    const quant = selectedQuants[modelId];
-    if (!quant) return;
-
-    const tracker = new DownloadTracker();
-    trackers.current[modelId] = tracker;
+    startTimes.current[modelId] = Date.now();
+    refreshed.current.delete(modelId);
     setDownloads((prev) => ({ ...prev, [modelId]: { stats: null, status: "downloading" } }));
+    try {
+      await api.startDownload(modelId);
+      pollDownloads();
+    } catch (e: any) {
+      alert(`Couldn't start download: ${e.message}`);
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[modelId];
+        return next;
+      });
+    }
+  };
 
-    await apiClient.streamPull(
-      modelId,
-      (completed, total, status) => {
-        if (total > 0) {
-          const stats = tracker.update(completed, total);
-          setDownloads((prev) => ({ ...prev, [modelId]: { stats, status: "downloading" } }));
-        } else {
-          setDownloads((prev) => ({
-            ...prev,
-            [modelId]: { stats: prev[modelId]?.stats ?? null, status: status || "downloading" },
-          }));
-        }
-      },
-      () => {
-        setDownloads((prev) => {
-          const next = { ...prev };
-          delete next[modelId];
-          return next;
-        });
-        delete trackers.current[modelId];
-        fetchCatalog();
-      },
-      (err) => {
-        alert(`Download failed: ${err.message}`);
-        setDownloads((prev) => {
-          const next = { ...prev };
-          delete next[modelId];
-          return next;
-        });
-        delete trackers.current[modelId];
-      }
-    );
+  // Cancel an in-progress background download (partial kept for resume).
+  const handleCancelDownload = async (modelId: string) => {
+    await api.cancelDownload(modelId);
+    pollDownloads();
   };
 
   // Delete model
@@ -322,6 +343,13 @@ export const ModelsPage: React.FC = () => {
                     {download ? (
                       <div style={styles.downloadProgressBlock}>
                         <DownloadProgress stats={download.stats} status={download.status} compact />
+                        <button
+                          className="btn btn-secondary"
+                          style={{ ...styles.actionBtn, marginTop: "8px" }}
+                          onClick={() => handleCancelDownload(m.id)}
+                        >
+                          Cancel
+                        </button>
                       </div>
                     ) : isDownloaded ? (
                       <div style={styles.downloadedActions}>

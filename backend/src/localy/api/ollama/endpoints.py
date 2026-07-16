@@ -313,7 +313,7 @@ async def delete_model(
     """Delete a local model."""
     name = payload.get("name", "")
     try:
-        model_service.delete_model(name)
+        await model_service.delete_model(name)
         return {"status": "success"}
     except Exception as e:
         return {"status": f"error: {e}"}

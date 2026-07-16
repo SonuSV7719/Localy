@@ -218,6 +218,16 @@ class ModelService:
         """Download model weights."""
         return await self._manager.pull_model(model_spec, progress_callback, force)
 
-    def delete_model(self, model_spec: str) -> None:
-        """Delete model weights from disk."""
+    async def delete_model(self, model_spec: str) -> None:
+        """Delete model weights from disk (unloading first if it's active)."""
+        # If this model is currently loaded, unload it so the file isn't locked.
+        engine = get_engine(self._settings)
+        active = await engine.get_loaded_model_info()
+        if active is not None:
+            try:
+                entry, _ = self._manager.registry.resolve(model_spec)
+                if active.model_id == entry.full_id:
+                    await engine.unload_model()
+            except Exception:
+                pass
         self._manager.delete_model(model_spec)

@@ -24,6 +24,7 @@ export const ChatPage: React.FC = () => {
   // Speed statistics
   const [tokSec, setTokSec] = useState<number>(0);
   const [generatedTokens, setGeneratedTokens] = useState<number>(0);
+  const [waiting, setWaiting] = useState<boolean>(false); // true until first token
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -106,78 +107,72 @@ export const ChatPage: React.FC = () => {
     e.preventDefault();
     if (!input.trim() || generating || !activeConvId || !selectedModel) return;
 
-    const userMsg: ChatMessage = { role: "user", content: input };
+    const convId = activeConvId;
     const activeConv = getActiveConv();
     if (!activeConv) return;
 
-    const updatedMessages = [...activeConv.messages, userMsg];
-    
-    // Update active conversation title if empty
-    let title = activeConv.title;
-    if (activeConv.messages.length === 0) {
-      title = input.slice(0, 30) + (input.length > 30 ? "..." : "");
-    }
+    const userMsg: ChatMessage = { role: "user", content: input };
+    const baseMessages = [...activeConv.messages, userMsg]; // sent to the API (no empty assistant)
+    const assistantIndex = baseMessages.length;
+    const isFirst = activeConv.messages.length === 0;
+    const title = isFirst ? input.slice(0, 30) + (input.length > 30 ? "…" : "") : activeConv.title;
 
-    const updatedConv = {
-      ...activeConv,
-      title,
-      messages: updatedMessages,
-      modelId: selectedModel
-    };
+    // Add the user message + an empty assistant placeholder (functional update).
+    setConversations((prev) => {
+      const next = prev.map((c) =>
+        c.id === convId
+          ? { ...c, title, modelId: selectedModel, messages: [...baseMessages, { role: "assistant", content: "" } as ChatMessage] }
+          : c
+      );
+      localStorage.setItem("localy_conversations", JSON.stringify(next));
+      return next;
+    });
 
-    const nextConversations = conversations.map(c => c.id === activeConvId ? updatedConv : c);
-    saveConversations(nextConversations);
     setInput("");
-    
-    // Set up generating variables
     setGenerating(true);
+    setWaiting(true); // "Thinking…" until the first token (covers model-load time)
     setGeneratedTokens(0);
     setTokSec(0);
-    
+
+    let acc = "";
     let tokenCount = 0;
     const startTime = Date.now();
 
-    // Prepare helper logic to update streaming assistant message
-    const assistantMsgIndex = updatedMessages.length;
-    const initialAssistantMsg: ChatMessage = { role: "assistant", content: "" };
-    
-    const streamingConv = {
-      ...updatedConv,
-      messages: [...updatedMessages, initialAssistantMsg]
+    // Always update the assistant message by index via a functional update, so
+    // concurrent state changes / tab switches never drop tokens.
+    const setAssistant = (content: string, persist = false) => {
+      setConversations((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== convId) return c;
+          const msgs = [...c.messages];
+          if (msgs[assistantIndex]) msgs[assistantIndex] = { role: "assistant", content };
+          return { ...c, messages: msgs };
+        });
+        if (persist) localStorage.setItem("localy_conversations", JSON.stringify(next));
+        return next;
+      });
     };
-    
-    setConversations(conversations.map(c => c.id === activeConvId ? streamingConv : c));
 
-    // Call SSE API streaming
     await apiClient.streamChat(
-      {
-        model: selectedModel,
-        messages: updatedMessages,
-        temperature: 0.7,
-      },
+      { model: selectedModel, messages: baseMessages, temperature: 0.7 },
       (token) => {
+        setWaiting(false);
+        acc += token;
         tokenCount++;
         setGeneratedTokens(tokenCount);
-        
-        // Calculate dynamic tokens/sec
         const elapsed = (Date.now() - startTime) / 1000;
-        if (elapsed > 0) {
-          setTokSec(tokenCount / elapsed);
-        }
-
-        // Append token
-        streamingConv.messages[assistantMsgIndex].content += token;
-        setConversations(conversations.map(c => c.id === activeConvId ? { ...streamingConv } : c));
+        if (elapsed > 0) setTokSec(tokenCount / elapsed);
+        setAssistant(acc);
       },
       () => {
-        // Stream completed
         setGenerating(false);
-        saveConversations(conversations.map(c => c.id === activeConvId ? streamingConv : c));
+        setWaiting(false);
+        setAssistant(acc, true);
       },
       (err) => {
         setGenerating(false);
-        streamingConv.messages[assistantMsgIndex].content = `Error: ${err.message}`;
-        saveConversations(conversations.map(c => c.id === activeConvId ? streamingConv : c));
+        setWaiting(false);
+        setAssistant(acc || `⚠ ${err.message}`, true);
       }
     );
   };
@@ -305,7 +300,13 @@ export const ChatPage: React.FC = () => {
                         {isUser ? "You" : `Assistant (${activeConv.modelId})`}
                       </div>
                       <div style={styles.messageText}>
-                        {renderMessageContent(msg.content)}
+                        {isStreaming && !msg.content ? (
+                          <span style={styles.thinking} className="pulse-indicator">
+                            {waiting ? "Thinking… (loading model on first run can take a moment)" : "Generating…"}
+                          </span>
+                        ) : (
+                          renderMessageContent(msg.content)
+                        )}
                       </div>
                     </div>
                   </div>
@@ -491,6 +492,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontWeight: "600",
     textTransform: "uppercase"
   },
+  thinking: { fontSize: "14px", color: "#a1a1aa", fontStyle: "italic" },
   messageText: {
     fontSize: "14px",
     color: "#f4f4f5",

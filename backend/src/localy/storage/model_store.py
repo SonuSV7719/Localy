@@ -76,12 +76,24 @@ class ModelStore:
                 details={"filename": filename, "directory": str(self._models_path)},
             )
 
-        try:
-            path.unlink()
-            logger.info("model_deleted", filename=filename, path=str(path))
-        except OSError as e:
-            logger.error("failed_to_delete_model", filename=filename, error=str(e))
-            raise
+        import gc
+        import time
+
+        last_err: Exception | None = None
+        for attempt in range(4):
+            try:
+                path.unlink()
+                logger.info("model_deleted", filename=filename, path=str(path))
+                return
+            except PermissionError as e:  # Windows: file lock may linger after unload
+                last_err = e
+                gc.collect()
+                time.sleep(0.5)
+            except OSError as e:
+                logger.error("failed_to_delete_model", filename=filename, error=str(e))
+                raise
+        logger.error("failed_to_delete_model", filename=filename, error=str(last_err))
+        raise last_err  # type: ignore[misc]
 
     def has_model(self, filename: str, expected_size: int | None = None) -> bool:
         """Check if a model file exists locally and optionally has the expected size.

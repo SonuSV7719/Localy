@@ -94,6 +94,25 @@ export const api = {
     });
   },
 
+  // --- Background downloads (server-side; survive tab switches) ---
+
+  /** Start (or resume) a background download. Returns immediately. */
+  async startDownload(model: string): Promise<any> {
+    return apiClient.post<any>("/system/downloads/start", { model });
+  },
+
+  /** Progress of all downloads this session. */
+  async getDownloads(): Promise<
+    { model_id: string; status: string; completed: number; total: number; speed_mbps: number; error?: string | null }[]
+  > {
+    return apiClient.get("/system/downloads");
+  },
+
+  /** Cancel a background download (partial kept for resume). */
+  async cancelDownload(model: string): Promise<any> {
+    return apiClient.post<any>("/system/downloads/cancel", { model });
+  },
+
   // --- Pooling (Phase 3) ---
 
   /** Current pool membership + coordinator state. */

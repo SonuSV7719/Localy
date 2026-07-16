@@ -1,19 +1,24 @@
 """
-Resumable HTTP downloads with progress tracking and SHA256 verification.
+Fast, resumable, atomic file downloads.
 
-Handles multi-GB model file downloads with:
-- Resume support (Range headers) for interrupted downloads
-- Real-time progress callbacks for UI integration
-- Streaming SHA256 verification during download (no second pass)
-- Retry with exponential backoff on transient failures
+- Parallel: splits the file into ranges downloaded over several connections.
+- Atomic: writes to `<dest>.part` and renames to `<dest>` only when complete, so
+  an interrupted download never looks like a finished model.
+- Resumable: a small `.part.state` file records completed chunks, so a retry
+  (even after app restart) skips what's already done.
+- Cancellable + progress callbacks.
+
+Falls back to a single stream when the server doesn't support range requests.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import httpx
 
@@ -22,8 +27,48 @@ from localy.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Type for progress callback: (downloaded_bytes, total_bytes, speed_mbps) -> None
 ProgressCallback = Callable[[int, int, float], None]
+
+_CHUNK_SIZE = 32 * 1024 * 1024  # 32 MB per resumable chunk
+_DEFAULT_CONNECTIONS = 6
+
+
+async def _probe(url: str, timeout: int) -> tuple[int, bool]:
+    """Return (total_bytes, supports_range)."""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, read=60), follow_redirects=True) as c:
+        # A ranged GET for 1 byte is the most reliable probe across CDNs.
+        r = await c.get(url, headers={"Range": "bytes=0-0"})
+        if r.status_code == 206:
+            cr = r.headers.get("Content-Range", "")
+            total = int(cr.split("/")[-1]) if "/" in cr else 0
+            return total, total > 0
+        # No range support; use Content-Length from a normal request.
+        total = int(r.headers.get("Content-Length", "0") or 0)
+        return total, False
+
+
+async def _download_chunk(
+    client: httpx.AsyncClient,
+    url: str,
+    part: Path,
+    index: int,
+    start: int,
+    end: int,
+    on_bytes: Callable[[int], None],
+    cancel_check: Callable[[], bool] | None,
+) -> None:
+    """Download byte range [start, end] into `part` at the right offset."""
+    headers = {"Range": f"bytes={start}-{end}"}
+    async with client.stream("GET", url, headers=headers) as resp:
+        if resp.status_code not in (200, 206):
+            raise DownloadError(f"HTTP {resp.status_code} for chunk {index}")
+        with part.open("r+b") as f:
+            f.seek(start)
+            async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                if cancel_check and cancel_check():
+                    raise DownloadCancelledError("cancelled")
+                f.write(chunk)
+                on_bytes(len(chunk))
 
 
 async def download_file(
@@ -32,174 +77,132 @@ async def download_file(
     *,
     expected_sha256: str | None = None,
     progress_callback: ProgressCallback | None = None,
-    headers: dict[str, str] | None = None,
-    max_retries: int = 3,
+    connections: int = _DEFAULT_CONNECTIONS,
     timeout_seconds: int = 30,
     cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
-    """Download a file with resume support and progress tracking.
-
-    Args:
-        url: URL to download from.
-        destination: Local file path to save to.
-        expected_sha256: Expected SHA256 hash for verification. None to skip.
-        progress_callback: Called with (downloaded, total, speed_mbps).
-        headers: Additional HTTP headers.
-        max_retries: Maximum retry attempts on transient failures.
-        timeout_seconds: Connection timeout in seconds.
-        cancel_check: Callable returning True if download should be cancelled.
-
-    Returns:
-        Path to the downloaded file.
-
-    Raises:
-        DownloadError: If download fails after all retries.
-        DownloadCancelledError: If download is cancelled via cancel_check.
-    """
+    """Download `url` to `destination` in parallel, atomically, resumably."""
     destination.parent.mkdir(parents=True, exist_ok=True)
+    part = destination.with_name(destination.name + ".part")
+    state_path = destination.with_name(destination.name + ".part.state")
 
-    # Check for partial download (resume support)
-    downloaded_bytes = 0
     if destination.exists():
-        downloaded_bytes = destination.stat().st_size
+        return destination  # already complete
 
-    request_headers = dict(headers or {})
+    total, supports_range = await _probe(url, timeout_seconds)
 
-    for attempt in range(max_retries):
+    # ---- single-stream fallback (no range support / unknown size) ----
+    if not supports_range or total <= 0 or connections <= 1:
+        await _single_stream(url, part, total, progress_callback, timeout_seconds, cancel_check)
+        _finalize(part, destination, state_path, expected_sha256)
+        return destination
+
+    # ---- parallel chunked download ----
+    n_chunks = (total + _CHUNK_SIZE - 1) // _CHUNK_SIZE
+    done: set[int] = set()
+    if state_path.exists() and part.exists():
         try:
-            # Set Range header for resume
-            if downloaded_bytes > 0:
-                request_headers["Range"] = f"bytes={downloaded_bytes}-"
-                logger.info("download_resuming", url=url, from_byte=downloaded_bytes)
+            st = json.loads(state_path.read_text())
+            if st.get("total") == total and st.get("chunk_size") == _CHUNK_SIZE:
+                done = set(st.get("done", []))
+        except Exception:
+            done = set()
 
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout_seconds, read=300),
-                follow_redirects=True,
-            ) as client:
-                async with client.stream("GET", url, headers=request_headers) as response:
-                    if response.status_code == 416:
-                        # Range not satisfiable — file already complete
-                        logger.info("download_already_complete", url=url)
-                        break
+    # Preallocate the part file to full size (once).
+    if not part.exists() or part.stat().st_size != total:
+        with part.open("wb") as f:
+            f.truncate(total)
+        done = set()
 
-                    if response.status_code not in {200, 206}:
-                        raise DownloadError(  # noqa: TRY301
-                            f"HTTP {response.status_code}: {response.reason_phrase}",
-                            details={"url": url, "status": response.status_code},
-                        )
+    start_time = time.monotonic()
+    downloaded = [len(done) * _CHUNK_SIZE]  # mutable counter shared across chunk tasks
+    last_emit = [start_time]
+    lock = asyncio.Lock()
 
-                    # Get total size from Content-Range or Content-Length
-                    total_bytes = _get_total_size(response, downloaded_bytes)
+    def _save_state() -> None:
+        state_path.write_text(json.dumps({"total": total, "chunk_size": _CHUNK_SIZE, "done": sorted(done)}))
 
-                    hasher = hashlib.sha256()
-                    mode = "ab" if response.status_code == 206 else "wb"  # noqa: PLR2004
-                    if mode == "wb":
-                        downloaded_bytes = 0
+    def _bump(n: int) -> None:
+        downloaded[0] += n
+        now = time.monotonic()
+        if progress_callback and (now - last_emit[0]) >= 0.15:
+            speed = (downloaded[0] / (1024 * 1024)) / (now - start_time) if now > start_time else 0
+            progress_callback(min(downloaded[0], total), total, speed)
+            last_emit[0] = now
 
-                    # If we're resuming, we need to hash existing content first
-                    if mode == "ab" and downloaded_bytes > 0 and expected_sha256:
-                        hasher = _hash_existing(destination, hasher)
+    sem = asyncio.Semaphore(connections)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, read=120), follow_redirects=True) as client:
+        async def worker(i: int) -> None:
+            if i in done:
+                return
+            start = i * _CHUNK_SIZE
+            end = min(start + _CHUNK_SIZE, total) - 1
+            async with sem:
+                await _download_chunk(client, url, part, i, start, end, _bump, cancel_check)
+            async with lock:
+                done.add(i)
+                _save_state()
 
-                    start_time = time.monotonic()
-                    last_progress_time = start_time
-
-                    with destination.open(mode) as f:
-                        async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):  # 1MB chunks
-                            # Check cancellation
-                            if cancel_check and cancel_check():
-                                raise DownloadCancelledError("Download cancelled by user")
-
-                            f.write(chunk)
-                            if expected_sha256:
-                                hasher.update(chunk)
-                            downloaded_bytes += len(chunk)
-
-                            # Progress callback (throttled to max 10Hz)
-                            now = time.monotonic()
-                            if progress_callback and (now - last_progress_time) >= 0.1:
-                                elapsed = now - start_time
-                                speed_mbps = (downloaded_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                                progress_callback(downloaded_bytes, total_bytes, speed_mbps)
-                                last_progress_time = now
-
-                    # Final progress update
-                    if progress_callback:
-                        elapsed = time.monotonic() - start_time
-                        speed_mbps = (downloaded_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                        progress_callback(downloaded_bytes, total_bytes, speed_mbps)
-
-            # Verify SHA256
-            if expected_sha256:
-                actual_hash = hasher.hexdigest()
-                if actual_hash != expected_sha256:
-                    # Delete corrupted file
-                    destination.unlink(missing_ok=True)
-                    raise DownloadError(  # noqa: TRY301
-                        f"SHA256 mismatch: expected {expected_sha256[:16]}..., got {actual_hash[:16]}...",
-                        error_code="LOCALY_DOWNLOAD_HASH_MISMATCH",
-                        details={"expected": expected_sha256, "actual": actual_hash},
-                    )
-
-            logger.info(
-                "download_complete",
-                url=url,
-                size_mb=round(downloaded_bytes / (1024 * 1024), 1),
-                destination=str(destination),
-            )
-            return destination
-
+        try:
+            await asyncio.gather(*(worker(i) for i in range(n_chunks)))
         except DownloadCancelledError:
+            _save_state()
             raise
 
-        except DownloadError:
-            if attempt == max_retries - 1:
-                raise
-            wait = 2 ** attempt
-            logger.warning(
-                "download_retry",
-                attempt=attempt + 1,
-                max_retries=max_retries,
-                wait_seconds=wait,
-            )
-            time.sleep(wait)
-
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise DownloadError(
-                    f"Download failed after {max_retries} attempts: {e}",
-                    details={"url": url, "error": str(e)},
-                ) from e
-            wait = 2 ** attempt
-            logger.warning("download_retry", attempt=attempt + 1, wait_seconds=wait, error=str(e))
-            time.sleep(wait)
-
+    if progress_callback:
+        progress_callback(total, total, 0.0)
+    _finalize(part, destination, state_path, expected_sha256)
     return destination
 
 
-def _get_total_size(response: httpx.Response, already_downloaded: int) -> int:
-    """Extract total file size from response headers."""
-    content_range = response.headers.get("Content-Range")
-    if content_range:
-        # Format: "bytes start-end/total"
-        try:
-            total = int(content_range.split("/")[-1])
-            return total
-        except (ValueError, IndexError):
-            pass
+async def _single_stream(
+    url: Path | str,
+    part: Path,
+    total: int,
+    progress_callback: ProgressCallback | None,
+    timeout_seconds: int,
+    cancel_check: Callable[[], bool] | None,
+) -> None:
+    resume_from = part.stat().st_size if part.exists() else 0
+    headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
+    start_time = time.monotonic()
+    downloaded = resume_from
+    last_emit = start_time
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, read=300), follow_redirects=True) as client:
+        async with client.stream("GET", str(url), headers=headers) as resp:
+            if resp.status_code == 416:
+                return
+            if resp.status_code not in (200, 206):
+                raise DownloadError(f"HTTP {resp.status_code}")
+            mode = "ab" if resp.status_code == 206 else "wb"
+            if mode == "wb":
+                downloaded = 0
+            with part.open(mode) as f:
+                async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                    if cancel_check and cancel_check():
+                        raise DownloadCancelledError("cancelled")
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.monotonic()
+                    if progress_callback and (now - last_emit) >= 0.15:
+                        speed = (downloaded / (1024 * 1024)) / (now - start_time) if now > start_time else 0
+                        progress_callback(downloaded, total or downloaded, speed)
+                        last_emit = now
 
-    content_length = response.headers.get("Content-Length")
-    if content_length:
-        return already_downloaded + int(content_length)
 
-    return 0
-
-
-def _hash_existing(path: Path, hasher: Any) -> Any:
-    """Hash existing file content for resume verification."""
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-    return hasher
+def _finalize(part: Path, destination: Path, state_path: Path, expected_sha256: str | None) -> None:
+    """Verify (if hash given) and atomically rename .part -> destination."""
+    if expected_sha256:
+        h = hashlib.sha256()
+        with part.open("rb") as f:
+            while True:
+                b = f.read(1024 * 1024)
+                if not b:
+                    break
+                h.update(b)
+        if h.hexdigest() != expected_sha256:
+            part.unlink(missing_ok=True)
+            state_path.unlink(missing_ok=True)
+            raise DownloadError("SHA256 mismatch — download corrupted", error_code="LOCALY_DOWNLOAD_HASH_MISMATCH")
+    part.replace(destination)  # atomic on same filesystem
+    state_path.unlink(missing_ok=True)
