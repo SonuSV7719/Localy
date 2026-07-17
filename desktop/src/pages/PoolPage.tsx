@@ -16,31 +16,46 @@ export const PoolPage: React.FC = () => {
   // Live layer split for the model currently served across the pool.
   const [livePlan, setLivePlan] = useState<ShardPlan | null>(null);
   const livePlanModelRef = React.useRef<string | null>(null);
-  // Rich feedback for the (slow, multi-minute) "Run pooled" operation.
-  const [loadPhase, setLoadPhase] = useState<"idle" | "loading" | "done" | "error">("idle");
-  const [loadElapsed, setLoadElapsed] = useState<number>(0);
-  const loadStartRef = React.useRef<number>(0);
+  // "Run pooled" is kicked off on the server and tracked via status.loading, so
+  // progress survives tab switches. `initiating` covers the brief gap between
+  // clicking and the first status poll that reflects the load.
+  const [initiating, setInitiating] = useState<boolean>(false);
 
+  // Poll faster while a load is happening so the progress readout stays smooth,
+  // slower otherwise. Because progress lives on the server, the banner comes
+  // back correctly after switching tabs (this component just re-reads it).
+  const loadingActive = !!status?.loading?.active || initiating;
   useEffect(() => {
     refreshStatus();
     loadModels();
-    const t = setInterval(refreshStatus, 5000);
+    const t = setInterval(refreshStatus, loadingActive ? 1500 : 4000);
     return () => clearInterval(t);
-  }, []);
+  }, [loadingActive]);
 
-  // Tick an elapsed-time counter while a pooled load is in progress.
-  useEffect(() => {
-    if (loadPhase !== "loading") return;
-    const t = setInterval(() => setLoadElapsed(Math.floor((Date.now() - loadStartRef.current) / 1000)), 1000);
-    return () => clearInterval(t);
-  }, [loadPhase]);
+  // Human-readable phase label for the progress banner.
+  const phaseLabel = (phase?: string): string => {
+    switch (phase) {
+      case "starting": return "Starting coordinator…";
+      case "loading": return "Streaming model layers to devices…";
+      case "ready": return "Ready";
+      case "error": return "Failed";
+      default: return "Preparing…";
+    }
+  };
 
-  // Staged, reassuring status message based on how long the load has run.
-  const loadStatusMessage = (secs: number): string => {
-    if (secs < 6) return "Preparing the shard plan…";
-    if (secs < 20) return "Spawning coordinator and connecting to worker devices…";
-    if (secs < 60) return "Streaming model layers to devices…";
-    return "Still streaming layers — large models over WiFi can take a few minutes.";
+  const fmtDuration = (secs?: number | null): string => {
+    if (secs == null) return "—";
+    const s = Math.round(secs);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    return `${m}m ${s % 60}s`;
+  };
+
+  const fmtBytes = (b?: number | null): string => {
+    if (!b) return "—";
+    const gb = b / 1024 ** 3;
+    if (gb >= 1) return `${gb.toFixed(2)} GB`;
+    return `${(b / 1024 ** 2).toFixed(0)} MB`;
   };
 
   // Turn backend errors into something a user can act on.
@@ -162,20 +177,17 @@ export const PoolPage: React.FC = () => {
   const runPooled = async () => {
     if (!selectedModel) return;
     setError("");
-    setLoadElapsed(0);
-    loadStartRef.current = Date.now();
-    setLoadPhase("loading");
+    setInitiating(true);
     try {
+      // Returns quickly now — the load runs on the server and we track it via
+      // status.loading, so closing this tab won't stop it.
       const p = await api.loadPooled(selectedModel);
       setPlan(p);
-      setLoadPhase("done");
       await refreshStatus();
     } catch (e: any) {
       setError(prettyPoolError(e));
-      setLoadPhase("error");
-      // The coordinator may still have come up despite a client-side error —
-      // refresh so the UI reflects reality either way.
-      refreshStatus();
+    } finally {
+      setInitiating(false);
     }
   };
 
@@ -183,7 +195,6 @@ export const PoolPage: React.FC = () => {
     setBusy("stop");
     try {
       await api.unloadPooled();
-      setLoadPhase("idle");
       refreshStatus();
     } finally {
       setBusy("");
@@ -363,39 +374,80 @@ export const PoolPage: React.FC = () => {
               style={styles.select}
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
-              disabled={loadPhase === "loading"}
+              disabled={loadingActive}
             >
               {models.map((m) => (
                 <option key={m.id} value={m.id}>{m.name} ({m.parameter_count_billions.toFixed(1)}B)</option>
               ))}
             </select>
-            <button className="btn btn-secondary" onClick={checkFit} disabled={busy === "fit" || loadPhase === "loading"}>
+            <button className="btn btn-secondary" onClick={checkFit} disabled={busy === "fit" || loadingActive}>
               {busy === "fit" ? "Checking…" : "Check fit"}
             </button>
             <button
               className="btn btn-primary"
               onClick={runPooled}
-              disabled={loadPhase === "loading" || (!!plan && !plan.fits)}
+              disabled={loadingActive || (!!plan && !plan.fits)}
             >
-              {loadPhase === "loading" ? "Loading…" : "Run pooled"}
+              {loadingActive ? "Loading…" : "Run pooled"}
             </button>
           </div>
 
-          {/* Live progress for the slow pooled-load operation */}
-          {loadPhase === "loading" && (
-            <div style={styles.loadingBanner}>
-              <span className="pulse-indicator" style={styles.spinnerDot} />
-              <div style={styles.loadingTextCol}>
-                <div style={styles.loadingTitle}>
-                  Loading <b>{selectedModel}</b> across {status?.node_count ?? 1} device(s)… ({loadElapsed}s)
+          {/* Live, server-tracked progress — survives tab switches */}
+          {loadingActive && (() => {
+            const load = status?.loading;
+            const pct = load?.percent ?? null;
+            return (
+              <div style={styles.loadingBanner}>
+                <div style={styles.loadingHeaderRow}>
+                  <span className="pulse-indicator" style={styles.spinnerDot} />
+                  <span style={styles.loadingTitle}>
+                    Loading <b>{load?.model || selectedModel}</b> across {load?.node_count || status?.node_count || 1} device(s)
+                  </span>
+                  <span style={styles.loadingPhase}>{phaseLabel(load?.phase)}</span>
                 </div>
-                <div style={styles.loadingSub}>{loadStatusMessage(loadElapsed)}</div>
-                <div style={styles.loadingHint}>You can leave this tab — loading continues in the background.</div>
+
+                {/* Progress bar: real % if the loader reports it, else indeterminate */}
+                <div style={styles.progressTrack}>
+                  <div
+                    style={{
+                      ...styles.progressFill,
+                      width: pct != null ? `${pct}%` : "100%",
+                      opacity: pct != null ? 1 : 0.35,
+                    }}
+                    className={pct == null ? "pulse-indicator" : undefined}
+                  />
+                </div>
+
+                <div style={styles.statGrid}>
+                  <div style={styles.stat}><span style={styles.statLabel}>Progress</span>{pct != null ? `${pct.toFixed(0)}%` : "working…"}</div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Elapsed</span>{fmtDuration(load?.elapsed_s)}</div>
+                  <div style={styles.stat}><span style={styles.statLabel}>ETA</span>{load?.eta_s != null ? fmtDuration(load.eta_s) : "estimating…"}</div>
+                  <div style={styles.stat}>
+                    <span style={styles.statLabel}>Transferred</span>
+                    {load?.bytes_total ? `${fmtBytes(load.bytes_sent)} / ${fmtBytes(load.bytes_total)}` : "—"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Worker devices</span>{load?.remote_count ?? status?.remote_count ?? 0}</div>
+                </div>
+
+                {load?.bytes_total ? (
+                  <div style={styles.loadingSub}>
+                    ~{fmtBytes(load.bytes_total)} of model weights stream to {load?.remote_count || 1} worker device(s).
+                  </div>
+                ) : null}
+                {load?.last_log && <div style={styles.logLine}>{load.last_log}</div>}
+                <div style={styles.loadingHint}>You can switch tabs or close the window (with background mode on) — loading continues on the server.</div>
               </div>
+            );
+          })()}
+
+          {status?.loading?.phase === "error" && status.loading.error && !loadingActive && (
+            <div style={styles.errorBanner}>
+              <b>Pooled load failed.</b>
+              <div style={styles.errorDetail}>{status.loading.error}</div>
             </div>
           )}
 
-          {loadPhase === "done" && status?.pooled_active && (
+          {status?.pooled_active && (
             <div style={styles.successBanner}>
               ✅ <b>{status.active_model}</b> is now serving across the pool. Open the <b>Chat</b> tab and select
               this model to use it — requests route to the pool automatically.
@@ -477,26 +529,46 @@ const styles: { [key: string]: React.CSSProperties } = {
   rec: { fontSize: "12px", color: "#a1a1aa", marginTop: "4px", lineHeight: 1.4 },
   loadingBanner: {
     display: "flex",
-    gap: "12px",
-    alignItems: "flex-start",
+    flexDirection: "column",
+    gap: "10px",
     marginTop: "16px",
-    padding: "14px 16px",
+    padding: "16px",
     borderRadius: "10px",
     background: "rgba(99,102,241,0.1)",
     border: "1px solid rgba(99,102,241,0.3)",
   },
-  spinnerDot: {
-    width: "10px",
-    height: "10px",
-    borderRadius: "50%",
-    background: "#818cf8",
-    marginTop: "4px",
-    flexShrink: 0,
+  loadingHeaderRow: { display: "flex", alignItems: "center", gap: "10px" },
+  spinnerDot: { width: "10px", height: "10px", borderRadius: "50%", background: "#818cf8", flexShrink: 0 },
+  loadingTitle: { fontSize: "13px", color: "#e4e4e7", flexGrow: 1 },
+  loadingPhase: { fontSize: "12px", color: "#818cf8", fontWeight: 500 },
+  progressTrack: { height: "8px", background: "rgba(255,255,255,0.08)", borderRadius: "4px", overflow: "hidden" },
+  progressFill: { height: "100%", background: "linear-gradient(90deg,#6366f1,#22c55e)", borderRadius: "4px", transition: "width 0.5s ease" },
+  statGrid: { display: "flex", flexWrap: "wrap", gap: "18px" },
+  stat: { display: "flex", flexDirection: "column", gap: "2px", fontSize: "13px", color: "#e4e4e7", fontVariantNumeric: "tabular-nums" },
+  statLabel: { fontSize: "10px", color: "#71717a", textTransform: "uppercase", letterSpacing: "0.04em" },
+  logLine: {
+    fontSize: "11px",
+    color: "#a1a1aa",
+    fontFamily: "monospace",
+    background: "rgba(0,0,0,0.3)",
+    padding: "6px 10px",
+    borderRadius: "6px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
-  loadingTextCol: { display: "flex", flexDirection: "column", gap: "3px" },
-  loadingTitle: { fontSize: "13px", color: "#e4e4e7" },
   loadingSub: { fontSize: "12px", color: "#a1a1aa" },
-  loadingHint: { fontSize: "11px", color: "#71717a", marginTop: "2px" },
+  loadingHint: { fontSize: "11px", color: "#71717a" },
+  errorBanner: {
+    marginTop: "16px",
+    padding: "14px 16px",
+    borderRadius: "10px",
+    background: "var(--semantic-error-bg)",
+    border: "1px solid var(--semantic-error)",
+    fontSize: "13px",
+    color: "#fca5a5",
+  },
+  errorDetail: { marginTop: "6px", fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap", color: "#f0a0a0", maxHeight: "140px", overflowY: "auto" },
   successBanner: {
     marginTop: "16px",
     padding: "14px 16px",

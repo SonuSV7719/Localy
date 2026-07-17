@@ -46,7 +46,14 @@ Still on your main device, in **Run a Model Across the Pool**:
 2. **Check fit** — Localy computes whether the model fits across the *combined* memory and shows the planned per-device layer split.
 3. **Run pooled** — this spawns the coordinator and splits the model across the devices. `Run pooled` is enabled only when the model fits.
 
-Once loaded, **Pool Status** shows **● Serving `<model>`**.
+Loading a pooled model streams the model's layers to the worker devices, which can take **a few minutes** over WiFi. Localy shows a **live progress panel** with:
+
+- a progress bar and **percent** (when the loader reports it),
+- **elapsed time** and an **ETA**,
+- **data transferred** (`X of Y` GB streamed to the workers),
+- the number of worker devices and the latest loader log line.
+
+The load runs **on the server**, so you can **switch tabs or close the window** (with background mode on) and it keeps going — when you return, the progress panel resumes where it is. Once ready, **Pool Status** shows **● Serving `<model>`** and a success banner points you to the Chat tab.
 
 ### 4. Chat as normal
 

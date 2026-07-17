@@ -6,12 +6,21 @@ offloads layers to the remote `ggml-rpc-server` workers (via `--rpc`) using the
 memory-weighted `--tensor-split` from the shard planner. Localy proxies its
 normal OpenAI/Ollama chat routes to this llama-server, so the pooled model is
 served through the exact same API surface as solo mode.
+
+Loading is **non-blocking**: `start()` returns immediately after spawning the
+process, and a background monitor thread tracks readiness while parsing the
+subprocess output for progress. Callers poll `progress()` (surfaced through
+`/pool/status`) so the UI can show live status that survives tab switches —
+the state lives here on the server, not in any one client.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
+import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import httpx
@@ -24,6 +33,9 @@ from localy.pooling.shard_planner import ShardPlan
 
 logger = get_logger(__name__)
 
+# Best-effort progress signals parsed from llama-server stdout/stderr.
+_PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+
 
 class Coordinator:
     """Supervises the llama-server subprocess that drives pooled inference."""
@@ -35,9 +47,31 @@ class Coordinator:
         self._port = settings.coordinator_port
         self._model_id: str | None = None
 
+        # --- progress state (guarded by _lock) ---
+        self._lock = threading.Lock()
+        self._phase = "idle"          # idle | starting | loading | ready | error | stopped
+        self._ready = False
+        self._error: str | None = None
+        self._started_at = 0.0
+        self._ready_at = 0.0
+        self._progress_frac: float | None = None  # 0..1 if parseable from output
+        self._bytes_total = 0         # approx bytes to stream to remote workers
+        self._node_count = 0
+        self._remote_count = 0
+        self._last_log = ""
+        self._log_tail: deque[str] = deque(maxlen=200)
+        self._reader: threading.Thread | None = None
+        self._monitor: threading.Thread | None = None
+
+    # --- lifecycle ---------------------------------------------------------
+
     @property
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.is_running and self._ready
 
     @property
     def proxy_url(self) -> str:
@@ -55,10 +89,10 @@ class Coordinator:
         n_ctx: int = 4096,
         ready_timeout: float = 900.0,
     ) -> None:
-        """Launch llama-server with the pool's RPC endpoints and tensor split.
+        """Spawn llama-server and return immediately.
 
-        `ready_timeout` is generous by default: streaming layer weights to a slow
-        remote worker (e.g. a phone over WiFi) can take several minutes.
+        Readiness (weights streaming to remote workers, which can take minutes
+        over WiFi) is tracked in the background; poll `progress()`.
         """
         if self.is_running:
             self.stop()
@@ -70,27 +104,27 @@ class Coordinator:
                 "No remote workers in the shard plan; nothing to pool with."
             )
 
+        # How much weight data must stream to the remote (non-local) devices —
+        # the local device's share stays in local memory. Used for the UI's
+        # "X of Y transferred" readout.
+        remote_frac = sum(
+            w for n, w in zip(plan.nodes, plan.tensor_split) if not n.is_local
+        )
+        bytes_total = int(plan.model_size_bytes * max(0.0, min(1.0, remote_frac)))
+
         # tensor-split proportions must align with device order:
         #   local device(s) first, then RPC devices in --rpc order.
-        # The planner already orders nodes local-first.
         tensor_split = ",".join(f"{w:.4f}" for w in plan.tensor_split)
 
         cmd = [
             str(binary),
-            "--model",
-            str(model_path),
-            "--rpc",
-            ",".join(endpoints),
-            "--tensor-split",
-            tensor_split,
-            "-ngl",
-            "999",  # offload all layers across the (RPC) devices
-            "--host",
-            self._host,
-            "--port",
-            str(self._port),
-            "-c",
-            str(n_ctx),
+            "--model", str(model_path),
+            "--rpc", ",".join(endpoints),
+            "--tensor-split", tensor_split,
+            "-ngl", "999",  # offload all layers across the (RPC) devices
+            "--host", self._host,
+            "--port", str(self._port),
+            "-c", str(n_ctx),
         ]
         logger.info("starting_coordinator", model=model_id, cmd=" ".join(cmd))
 
@@ -106,41 +140,141 @@ class Coordinator:
         except OSError as e:
             raise ClusterFormationError(f"Failed to launch llama-server: {e}") from e
 
-        self._model_id = model_id
-        if not self._wait_until_ready(timeout=ready_timeout):
-            output = self._drain_output()
-            self.stop()
-            raise ClusterFormationError(
-                f"Pooled llama-server did not become ready. Output:\n{output}"
-            )
-        logger.info("coordinator_ready", model=model_id, url=self.proxy_url)
+        with self._lock:
+            self._model_id = model_id
+            self._phase = "starting"
+            self._ready = False
+            self._error = None
+            self._started_at = time.time()
+            self._ready_at = 0.0
+            self._progress_frac = None
+            self._bytes_total = bytes_total
+            self._node_count = len(plan.nodes)
+            self._remote_count = len(endpoints)
+            self._last_log = ""
+            self._log_tail.clear()
 
-    def _wait_until_ready(self, timeout: float) -> bool:
-        """Poll llama-server /health until ready (weights stream to workers first)."""
+        self._reader = threading.Thread(target=self._read_output, daemon=True)
+        self._reader.start()
+        self._monitor = threading.Thread(
+            target=self._await_ready, args=(ready_timeout,), daemon=True
+        )
+        self._monitor.start()
+
+    # --- background threads ------------------------------------------------
+
+    def _read_output(self) -> None:
+        """Stream subprocess output → progress signals + a rolling log tail."""
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for raw in proc.stdout:
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                self._ingest_line(line)
+        except Exception:  # pragma: no cover - stream closed mid-read
+            pass
+
+    def _ingest_line(self, line: str) -> None:
+        low = line.lower()
+        with self._lock:
+            self._last_log = line[:300]
+            self._log_tail.append(line[:300])
+
+            # Percentage, if the loader prints one.
+            m = _PCT_RE.search(line)
+            if m:
+                try:
+                    frac = float(m.group(1)) / 100.0
+                    if 0.0 <= frac <= 1.0:
+                        self._progress_frac = frac
+                except ValueError:
+                    pass
+
+            # Coarse phase transitions from recognisable markers.
+            if self._phase in ("starting", "loading"):
+                if any(k in low for k in ("rpc", "connecting", "endpoint")):
+                    self._phase = "loading"
+                if any(k in low for k in ("load_tensors", "loading model", "llama_model_loader", "tensor")):
+                    self._phase = "loading"
+
+    def _await_ready(self, timeout: float) -> None:
+        """Poll llama-server /health until ready, the process dies, or timeout."""
         deadline = time.time() + timeout
         health = f"{self.proxy_url}/health"
         while time.time() < deadline:
-            if self._proc is None or self._proc.poll() is not None:
-                return False  # process died
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                self._fail("The pooled server process exited during startup.")
+                return
             try:
                 r = httpx.get(health, timeout=2.0)
                 if r.status_code == 200:
-                    return True
+                    with self._lock:
+                        self._ready = True
+                        self._phase = "ready"
+                        self._ready_at = time.time()
+                        self._progress_frac = 1.0
+                    logger.info("coordinator_ready", model=self._model_id, url=self.proxy_url)
+                    return
             except httpx.HTTPError:
                 pass
             time.sleep(1.0)
-        return False
+        self._fail("Timed out waiting for the pooled server to become ready.")
 
-    def _drain_output(self) -> str:
-        if self._proc is None or self._proc.stdout is None:
-            return ""
-        try:
-            return self._proc.stdout.read() or ""
-        except Exception:
-            return ""
+    def _fail(self, message: str) -> None:
+        with self._lock:
+            tail = "\n".join(list(self._log_tail)[-20:])
+            self._error = f"{message}\n{tail}".strip()
+            self._phase = "error"
+            self._ready = False
+        logger.warning("coordinator_failed", model=self._model_id, error=message)
+        # Reap the process if it's still hanging around.
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    # --- introspection -----------------------------------------------------
+
+    def progress(self) -> dict:
+        """Snapshot of load state for the UI. Safe to call frequently."""
+        with self._lock:
+            active = self.is_running and not self._ready and self._error is None
+            elapsed = 0.0
+            if self._started_at:
+                end = self._ready_at if self._ready_at else time.time()
+                elapsed = max(0.0, end - self._started_at)
+            frac = self._progress_frac
+            bytes_sent = int(self._bytes_total * frac) if (frac is not None and self._bytes_total) else None
+            eta = None
+            if active and frac is not None and 0.0 < frac < 1.0 and elapsed > 1.0:
+                eta = elapsed * (1.0 - frac) / frac
+            return {
+                "active": active,
+                "phase": self._phase,
+                "ready": self._ready,
+                "error": self._error,
+                "model": self._model_id,
+                "elapsed_s": round(elapsed, 1),
+                "eta_s": round(eta, 1) if eta is not None else None,
+                "percent": round(frac * 100, 1) if frac is not None else None,
+                "bytes_total": self._bytes_total or None,
+                "bytes_sent": bytes_sent,
+                "node_count": self._node_count,
+                "remote_count": self._remote_count,
+                "last_log": self._last_log or None,
+            }
 
     def stop(self) -> None:
         if self._proc is None:
+            with self._lock:
+                self._phase = "idle"
             return
         if self._proc.poll() is None:
             self._proc.terminate()
@@ -150,4 +284,9 @@ class Coordinator:
                 self._proc.kill()
         logger.info("coordinator_stopped", model=self._model_id)
         self._proc = None
-        self._model_id = None
+        with self._lock:
+            self._model_id = None
+            self._ready = False
+            self._error = None
+            self._phase = "stopped"
+            self._progress_frac = None

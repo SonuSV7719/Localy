@@ -218,8 +218,13 @@ class PoolService:
         return self._coordinator.proxy_url if self._coordinator.is_running else None
 
     def is_serving(self, model_id: str) -> bool:
-        """True if a pooled coordinator is actively serving this model."""
-        return self._coordinator.is_running and self._coordinator.model_id == model_id
+        """True if a pooled coordinator is *ready* and serving this model.
+
+        Gated on readiness so chat doesn't proxy to a coordinator that is still
+        streaming weights to workers (it would fail); until ready, requests fall
+        through to the solo path.
+        """
+        return self._coordinator.is_ready and self._coordinator.model_id == model_id
 
     def serving_url(self) -> str | None:
         """Base URL of the active pooled coordinator, if any."""
@@ -229,13 +234,16 @@ class PoolService:
         nodes = self._state.all_nodes()
         total = sum(n.budget_bytes for n in nodes)
         return {
-            "pooled_active": self._coordinator.is_running,
+            # "active" now means *ready and serving* — matches is_serving, so the
+            # UI's 🔗 badge only shows once the pool can actually answer requests.
+            "pooled_active": self._coordinator.is_ready,
             "active_model": self._coordinator.model_id,
             "proxy_url": self.proxy_url,
             "worker_running": self.worker_running,
             "node_count": len(nodes),
             "remote_count": len(self._state.remote_nodes()),
             "total_budget_gb": round(total / (1024**3), 2),
+            "loading": self._coordinator.progress(),
             "nodes": [
                 {
                     "node_id": n.node_id,
