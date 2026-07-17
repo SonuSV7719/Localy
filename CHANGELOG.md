@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Attach documents in chat.** Attach PDFs, text, Markdown, code, JSON/CSV, etc.; Localy extracts the text (server-side, PDFs via pypdf) and feeds it to the model as context. Works with any text model — the chat bubble shows filename chips, and long files are truncated to fit the context. (Image/vision attachments for capable models are planned next.)
 - Model Catalog search shows a loading spinner and its results dropdown now closes on outside-click / Esc.
+- **Android chat sessions.** The phone chat now keeps multiple conversations in on-device **SQLite**, with a sessions drawer to switch chats and **rename / archive / delete** — all stored locally on the device. Plus **document attachments** on mobile (PDF/text/code) via the same extraction as desktop, and a branded launcher icon + splash screen.
 
 - Rich chat experience: Markdown rendering, collapsible reasoning/thinking sections, stop-generation control, and delete/archive/rename for conversations, with quota-safe history handling.
 - Real per-device pool contribution analysis, so each machine's share of a pooled run is measured rather than estimated.
