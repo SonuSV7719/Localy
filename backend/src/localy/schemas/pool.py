@@ -15,6 +15,22 @@ class PoolNodeResponse(BaseModel):
     budget_gb: float
 
 
+class PoolLoadProgress(BaseModel):
+    active: bool = False          # a load is in progress right now
+    phase: str = "idle"           # idle | starting | loading | ready | error | stopped
+    ready: bool = False
+    error: str | None = None
+    model: str | None = None
+    elapsed_s: float = 0.0
+    eta_s: float | None = None
+    percent: float | None = None  # 0..100 if the loader reports it
+    bytes_total: int | None = None
+    bytes_sent: int | None = None
+    node_count: int = 0
+    remote_count: int = 0
+    last_log: str | None = None
+
+
 class PoolStatusResponse(BaseModel):
     pooled_active: bool
     active_model: str | None = None
@@ -23,6 +39,7 @@ class PoolStatusResponse(BaseModel):
     node_count: int
     remote_count: int
     total_budget_gb: float
+    loading: PoolLoadProgress | None = None
     nodes: list[PoolNodeResponse]
 
 

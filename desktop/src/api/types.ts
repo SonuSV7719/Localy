@@ -146,6 +146,22 @@ export interface PoolNode {
   budget_gb: number;
 }
 
+export interface PoolLoadProgress {
+  active: boolean;
+  phase: string; // idle | starting | loading | ready | error | stopped
+  ready: boolean;
+  error: string | null;
+  model: string | null;
+  elapsed_s: number;
+  eta_s: number | null;
+  percent: number | null; // 0..100 if the loader reports it
+  bytes_total: number | null;
+  bytes_sent: number | null;
+  node_count: number;
+  remote_count: number;
+  last_log: string | null;
+}
+
 export interface PoolStatus {
   pooled_active: boolean;
   active_model: string | null;
@@ -154,6 +170,7 @@ export interface PoolStatus {
   node_count: number;
   remote_count: number;
   total_budget_gb: number;
+  loading?: PoolLoadProgress | null;
   nodes: PoolNode[];
 }
 
