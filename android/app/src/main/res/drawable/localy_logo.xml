@@ -1,0 +1,24 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- connecting lines of the "L" -->
+    <path
+        android:strokeColor="#E0E7FF"
+        android:strokeWidth="46"
+        android:strokeLineCap="round"
+        android:pathData="M360,300 L360,660 L700,660" />
+    <!-- outer nodes (white) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M290,300 a70,70 0 1,0 140,0 a70,70 0 1,0 -140,0 Z
+                          M290,660 a70,70 0 1,0 140,0 a70,70 0 1,0 -140,0 Z
+                          M630,660 a70,70 0 1,0 140,0 a70,70 0 1,0 -140,0 Z" />
+    <!-- inner nodes (green) -->
+    <path
+        android:fillColor="#4ADE80"
+        android:pathData="M330,300 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 Z
+                          M330,660 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 Z
+                          M670,660 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 Z" />
+</vector>
