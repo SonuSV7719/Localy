@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
 import { apiClient } from "../api/client";
-import { RegistryModel, ChatMessage } from "../api/types";
+import { RegistryModel, ChatMessage, PoolStatus } from "../api/types";
+import { saveListWithTrim } from "../lib/safeStorage";
+import { parseThinking } from "../lib/messageContent";
+import { Markdown } from "../components/Markdown";
+import { ThinkingBlock } from "../components/ThinkingBlock";
 
 interface Conversation {
   id: string;
@@ -9,29 +13,47 @@ interface Conversation {
   messages: ChatMessage[];
   modelId: string;
   timestamp: number;
+  archived?: boolean;
 }
+
+const STORAGE_KEY = "localy_conversations";
 
 export const ChatPage: React.FC = () => {
   const [models, setModels] = useState<RegistryModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  
+  const [showArchived, setShowArchived] = useState<boolean>(false);
+  const [copiedModel, setCopiedModel] = useState<boolean>(false);
+
   // Message input state
   const [input, setInput] = useState<string>("");
   const [generating, setGenerating] = useState<boolean>(false);
-  
+
   // Speed statistics
   const [tokSec, setTokSec] = useState<number>(0);
   const [generatedTokens, setGeneratedTokens] = useState<number>(0);
   const [waiting, setWaiting] = useState<boolean>(false); // true until first token
 
+  // Device pool status (for the multi-device contribution indicator)
+  const [pool, setPool] = useState<PoolStatus | null>(null);
+  const [poolExpanded, setPoolExpanded] = useState<boolean>(false);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const quotaWarnedRef = useRef<boolean>(false);
 
   // Load models and conversations on mount
   useEffect(() => {
     fetchModels();
     loadConversations();
+    refreshPool();
+    const t = setInterval(refreshPool, 8000);
+    return () => {
+      clearInterval(t);
+      // Abort any in-flight stream when leaving the page.
+      abortRef.current?.abort();
+    };
   }, []);
 
   // Scroll to bottom when messages change
@@ -39,48 +61,54 @@ export const ChatPage: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversations, activeConvId, generating]);
 
+  const refreshPool = async () => {
+    try {
+      setPool(await api.getPoolStatus());
+    } catch {
+      /* pool status is best-effort */
+    }
+  };
+
   // Fetch local models
   const fetchModels = async () => {
     try {
       const data = await api.getModels();
-      // Filter only downloaded models
-      const downloaded = data.filter(m => m.variants.some(v => v.is_downloaded));
+      const downloaded = data.filter((m) => m.variants.some((v) => v.is_downloaded));
       setModels(downloaded);
-      
-      // Auto-select first model
       if (downloaded.length > 0) {
-        // Find variant tag
-        const firstModel = downloaded[0];
-        const downloadedVar = firstModel.variants.find(v => v.is_downloaded);
-        if (downloadedVar) {
-          setSelectedModel(`${firstModel.id}`);
-        }
+        setSelectedModel(`${downloaded[0].id}`);
       }
     } catch (e) {
       console.error("Failed to load models:", e);
     }
   };
 
-  // Load conversations from local storage
+  // Persist conversations, trimming oldest if we hit the storage quota.
+  const persist = (updated: Conversation[]) => {
+    const { trimmed } = saveListWithTrim(STORAGE_KEY, updated);
+    if (trimmed > 0 && !quotaWarnedRef.current) {
+      quotaWarnedRef.current = true;
+      console.warn(`Storage full — archived ${trimmed} oldest conversation(s) to keep recent ones.`);
+    }
+  };
+
   const loadConversations = () => {
-    const data = localStorage.getItem("localy_conversations");
+    const data = localStorage.getItem(STORAGE_KEY);
     if (data) {
       try {
         const parsed = JSON.parse(data) as Conversation[];
         setConversations(parsed);
-        if (parsed.length > 0) {
-          setActiveConvId(parsed[0].id);
-        }
+        const firstActive = parsed.find((c) => !c.archived);
+        if (firstActive) setActiveConvId(firstActive.id);
       } catch (e) {
         console.error(e);
       }
     }
   };
 
-  // Save conversations helper
   const saveConversations = (updated: Conversation[]) => {
     setConversations(updated);
-    localStorage.setItem("localy_conversations", JSON.stringify(updated));
+    persist(updated);
   };
 
   // Start new conversation
@@ -88,18 +116,60 @@ export const ChatPage: React.FC = () => {
     if (!selectedModel) return;
     const newConv: Conversation = {
       id: Math.random().toString(36).substring(7),
-      title: `New Conversation (${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})})`,
+      title: `New Conversation (${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`,
       messages: [],
       modelId: selectedModel,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
     saveConversations([newConv, ...conversations]);
     setActiveConvId(newConv.id);
+    setShowArchived(false);
   };
 
-  // Get active conversation
-  const getActiveConv = (): Conversation | undefined => {
-    return conversations.find(c => c.id === activeConvId);
+  const getActiveConv = (): Conversation | undefined => conversations.find((c) => c.id === activeConvId);
+
+  // --- conversation management ---------------------------------------------
+
+  const deleteConv = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const conv = conversations.find((c) => c.id === id);
+    if (conv && conv.messages.length > 0 && !window.confirm("Delete this conversation permanently?")) return;
+    const updated = conversations.filter((c) => c.id !== id);
+    saveConversations(updated);
+    if (activeConvId === id) {
+      const next = updated.find((c) => !c.archived);
+      setActiveConvId(next ? next.id : null);
+    }
+  };
+
+  const toggleArchive = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = conversations.map((c) => (c.id === id ? { ...c, archived: !c.archived } : c));
+    saveConversations(updated);
+    if (activeConvId === id) {
+      const next = updated.find((c) => !c.archived);
+      setActiveConvId(next ? next.id : null);
+    }
+  };
+
+  const renameConv = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const conv = conversations.find((c) => c.id === id);
+    const title = window.prompt("Rename conversation", conv?.title || "");
+    if (title == null) return;
+    saveConversations(conversations.map((c) => (c.id === id ? { ...c, title: title.trim() || c.title } : c)));
+  };
+
+  const copyModelName = () => {
+    if (!selectedModel) return;
+    navigator.clipboard?.writeText(selectedModel).then(() => {
+      setCopiedModel(true);
+      setTimeout(() => setCopiedModel(false), 1500);
+    });
+  };
+
+  const stopGeneration = () => {
+    abortRef.current?.abort();
   };
 
   // Send message
@@ -112,25 +182,24 @@ export const ChatPage: React.FC = () => {
     if (!activeConv) return;
 
     const userMsg: ChatMessage = { role: "user", content: input };
-    const baseMessages = [...activeConv.messages, userMsg]; // sent to the API (no empty assistant)
+    const baseMessages = [...activeConv.messages, userMsg];
     const assistantIndex = baseMessages.length;
     const isFirst = activeConv.messages.length === 0;
     const title = isFirst ? input.slice(0, 30) + (input.length > 30 ? "…" : "") : activeConv.title;
 
-    // Add the user message + an empty assistant placeholder (functional update).
     setConversations((prev) => {
       const next = prev.map((c) =>
         c.id === convId
           ? { ...c, title, modelId: selectedModel, messages: [...baseMessages, { role: "assistant", content: "" } as ChatMessage] }
           : c
       );
-      localStorage.setItem("localy_conversations", JSON.stringify(next));
+      persist(next);
       return next;
     });
 
     setInput("");
     setGenerating(true);
-    setWaiting(true); // "Thinking…" until the first token (covers model-load time)
+    setWaiting(true);
     setGeneratedTokens(0);
     setTokSec(0);
 
@@ -138,9 +207,7 @@ export const ChatPage: React.FC = () => {
     let tokenCount = 0;
     const startTime = Date.now();
 
-    // Always update the assistant message by index via a functional update, so
-    // concurrent state changes / tab switches never drop tokens.
-    const setAssistant = (content: string, persist = false) => {
+    const setAssistant = (content: string, doPersist = false) => {
       setConversations((prev) => {
         const next = prev.map((c) => {
           if (c.id !== convId) return c;
@@ -148,10 +215,13 @@ export const ChatPage: React.FC = () => {
           if (msgs[assistantIndex]) msgs[assistantIndex] = { role: "assistant", content };
           return { ...c, messages: msgs };
         });
-        if (persist) localStorage.setItem("localy_conversations", JSON.stringify(next));
+        if (doPersist) persist(next);
         return next;
       });
     };
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     await apiClient.streamChat(
       { model: selectedModel, messages: baseMessages, temperature: 0.7 },
@@ -168,59 +238,81 @@ export const ChatPage: React.FC = () => {
         setGenerating(false);
         setWaiting(false);
         setAssistant(acc, true);
+        abortRef.current = null;
       },
       (err) => {
         setGenerating(false);
         setWaiting(false);
         setAssistant(acc || `⚠ ${err.message}`, true);
-      }
+        abortRef.current = null;
+      },
+      controller.signal
     );
   };
 
-  // Simple Markdown Code highlight helper
-  const renderMessageContent = (text: string) => {
-    const parts = text.split(/(```[\s\S]*?```)/g);
-    return parts.map((part, idx) => {
-      if (part.startsWith("```")) {
-        const lines = part.split("\n");
-        const code = lines.slice(1, -1).join("\n");
-        return (
-          <pre key={idx} style={styles.codeBlock}>
-            <code>{code}</code>
-          </pre>
-        );
-      }
-      return <span key={idx} style={{ whiteSpace: "pre-wrap" }}>{part}</span>;
-    });
-  };
-
   const activeConv = getActiveConv();
+  const activeList = conversations.filter((c) => !c.archived);
+  const archivedList = conversations.filter((c) => c.archived);
+  const visibleList = showArchived ? archivedList : activeList;
+
+  // Device pool: is more than one device contributing?
+  const multiDevice = !!pool && pool.pooled_active && pool.node_count > 1;
+  const poolNodes = pool?.nodes ?? [];
+  const totalBudget = poolNodes.reduce((s, n) => s + (n.budget_gb || 0), 0) || 1;
 
   return (
     <div style={styles.chatWrapper}>
-      
       {/* Sidebar: Chats List */}
       <div style={styles.sidebar} className="glass-panel">
         <button className="btn btn-primary" style={styles.newChatBtn} onClick={startNewChat}>
           + New Chat
         </button>
-        
+
+        <div style={styles.tabRow}>
+          <button
+            style={{ ...styles.tabBtn, ...(showArchived ? {} : styles.tabActive) }}
+            onClick={() => setShowArchived(false)}
+          >
+            Active ({activeList.length})
+          </button>
+          <button
+            style={{ ...styles.tabBtn, ...(showArchived ? styles.tabActive : {}) }}
+            onClick={() => setShowArchived(true)}
+          >
+            Archived ({archivedList.length})
+          </button>
+        </div>
+
         <div style={styles.convList}>
-          {conversations.length === 0 ? (
-            <p style={styles.emptySidebar}>No conversations yet.</p>
+          {visibleList.length === 0 ? (
+            <p style={styles.emptySidebar}>{showArchived ? "No archived chats." : "No conversations yet."}</p>
           ) : (
-            conversations.map(c => (
+            visibleList.map((c) => (
               <div
                 key={c.id}
                 onClick={() => setActiveConvId(c.id)}
+                className="conv-item"
                 style={{
                   ...styles.convItem,
                   background: c.id === activeConvId ? "rgba(99, 102, 241, 0.12)" : "transparent",
-                  borderColor: c.id === activeConvId ? "rgba(99, 102, 241, 0.3)" : "transparent"
+                  borderColor: c.id === activeConvId ? "rgba(99, 102, 241, 0.3)" : "transparent",
                 }}
               >
-                <div style={styles.convItemTitle}>{c.title}</div>
-                <div style={styles.convItemSub}>{c.modelId}</div>
+                <div style={styles.convItemMain}>
+                  <div style={styles.convItemTitle}>{c.title}</div>
+                  <div style={styles.convItemSub}>{c.modelId}</div>
+                </div>
+                <div style={styles.convActions}>
+                  <button title="Rename" style={styles.iconBtn} onClick={(e) => renameConv(c.id, e)}>✎</button>
+                  <button
+                    title={c.archived ? "Unarchive" : "Archive"}
+                    style={styles.iconBtn}
+                    onClick={(e) => toggleArchive(c.id, e)}
+                  >
+                    {c.archived ? "⇤" : "🗄"}
+                  </button>
+                  <button title="Delete" style={styles.iconBtn} onClick={(e) => deleteConv(c.id, e)}>🗑</button>
+                </div>
               </div>
             ))
           )}
@@ -229,7 +321,6 @@ export const ChatPage: React.FC = () => {
 
       {/* Main Chat Feed */}
       <div style={styles.feedWrapper}>
-        
         {/* Top Header Panel */}
         <div style={styles.header} className="glass-panel">
           <div style={styles.headerTitle}>
@@ -239,8 +330,17 @@ export const ChatPage: React.FC = () => {
                 ⚡ {tokSec.toFixed(1)} tok/s ({generatedTokens} tokens)
               </span>
             )}
+            {multiDevice && (
+              <span
+                style={styles.deviceBadge}
+                onClick={() => setPoolExpanded((v) => !v)}
+                title="This response is computed across multiple devices"
+              >
+                🔗 {pool!.node_count} devices
+              </span>
+            )}
           </div>
-          
+
           <div style={styles.modelSelectorWrapper}>
             <span style={styles.selectorLabel}>Active Model:</span>
             <select
@@ -252,13 +352,45 @@ export const ChatPage: React.FC = () => {
               {models.length === 0 ? (
                 <option value="">No models downloaded</option>
               ) : (
-                models.map(m => (
+                models.map((m) => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))
               )}
             </select>
+            <button
+              type="button"
+              title="Copy model name"
+              onClick={copyModelName}
+              disabled={!selectedModel}
+              style={styles.copyModelBtn}
+            >
+              {copiedModel ? "✓" : "⧉"}
+            </button>
           </div>
         </div>
+
+        {/* Multi-device contribution detail */}
+        {multiDevice && poolExpanded && (
+          <div style={styles.poolDetail} className="glass-panel">
+            <div style={styles.poolDetailTitle}>
+              Distributed across {pool!.node_count} devices · {pool!.total_budget_gb.toFixed(1)} GB combined memory
+            </div>
+            {poolNodes.map((n) => {
+              const share = ((n.budget_gb || 0) / totalBudget) * 100;
+              return (
+                <div key={n.node_id} style={styles.poolNodeRow}>
+                  <span style={styles.poolNodeLabel}>
+                    {n.is_local ? "🖥 This device" : `💻 ${n.label || n.address}`}
+                  </span>
+                  <div style={styles.poolBarTrack}>
+                    <div style={{ ...styles.poolBarFill, width: `${share}%` }} />
+                  </div>
+                  <span style={styles.poolNodePct}>{share.toFixed(0)}%</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Chat History Panel */}
         <div style={styles.messageArea}>
@@ -279,21 +411,19 @@ export const ChatPage: React.FC = () => {
               {activeConv.messages.map((msg, idx) => {
                 const isUser = msg.role === "user";
                 const isStreaming = !isUser && generating && idx === activeConv.messages.length - 1;
-                
+                const parsed = isUser ? null : parseThinking(msg.content);
+
                 return (
                   <div
                     key={idx}
-                    style={{
-                      ...styles.messageRow,
-                      justifyContent: isUser ? "flex-end" : "flex-start"
-                    }}
+                    style={{ ...styles.messageRow, justifyContent: isUser ? "flex-end" : "flex-start" }}
                   >
                     <div
-                      className={isStreaming ? "cursor-blink glass-panel" : (isUser ? "" : "glass-panel")}
+                      className={isStreaming ? "cursor-blink glass-panel" : isUser ? "" : "glass-panel"}
                       style={{
                         ...styles.messageBubble,
                         background: isUser ? "var(--primary)" : "var(--panel-bg)",
-                        border: isUser ? "none" : "1px solid var(--panel-border)"
+                        border: isUser ? "none" : "1px solid var(--panel-border)",
                       }}
                     >
                       <div style={styles.messageSender}>
@@ -304,8 +434,19 @@ export const ChatPage: React.FC = () => {
                           <span style={styles.thinking} className="pulse-indicator">
                             {waiting ? "Thinking… (loading model on first run can take a moment)" : "Generating…"}
                           </span>
+                        ) : isUser ? (
+                          <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
                         ) : (
-                          renderMessageContent(msg.content)
+                          <>
+                            {parsed!.thinking && (
+                              <ThinkingBlock thinking={parsed!.thinking} inProgress={parsed!.thinkingInProgress} />
+                            )}
+                            {parsed!.answer ? (
+                              <Markdown text={parsed!.answer} />
+                            ) : parsed!.thinkingInProgress ? (
+                              <span style={styles.thinking} className="pulse-indicator">Reasoning…</span>
+                            ) : null}
+                          </>
                         )}
                       </div>
                     </div>
@@ -328,19 +469,23 @@ export const ChatPage: React.FC = () => {
               placeholder={activeConvId ? "Ask a question..." : "Select or start a chat first..."}
               style={styles.textInput}
             />
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={generating || !input.trim() || !activeConvId}
-              style={styles.sendBtn}
-            >
-              Send
-            </button>
+            {generating ? (
+              <button type="button" className="btn" onClick={stopGeneration} style={styles.stopBtn}>
+                ■ Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={!input.trim() || !activeConvId}
+                style={styles.sendBtn}
+              >
+                Send
+              </button>
+            )}
           </form>
         </div>
-
       </div>
-
     </div>
   );
 };
@@ -353,7 +498,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     width: "100%",
     minWidth: 0,
     overflow: "hidden",
-    background: "#09090b"
+    background: "#09090b",
   },
   sidebar: {
     width: "280px",
@@ -363,46 +508,53 @@ const styles: { [key: string]: React.CSSProperties } = {
     flexDirection: "column",
     padding: "20px",
     background: "rgba(10, 10, 15, 0.4)",
-    flexShrink: 0
+    flexShrink: 0,
   },
-  newChatBtn: {
-    width: "100%",
-    padding: "12px",
-    marginBottom: "20px",
-    fontWeight: "600"
+  newChatBtn: { width: "100%", padding: "12px", marginBottom: "14px", fontWeight: "600" },
+  tabRow: { display: "flex", gap: "6px", marginBottom: "14px" },
+  tabBtn: {
+    flex: 1,
+    padding: "6px 8px",
+    fontSize: "12px",
+    color: "#a1a1aa",
+    background: "transparent",
+    border: "1px solid var(--panel-border)",
+    borderRadius: "6px",
+    cursor: "pointer",
   },
-  convList: {
-    flexGrow: 1,
-    overflowY: "auto",
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px"
-  },
-  emptySidebar: {
-    color: "#71717a",
-    fontSize: "13px",
-    textAlign: "center",
-    marginTop: "20px"
-  },
+  tabActive: { background: "rgba(99, 102, 241, 0.15)", color: "#fff", borderColor: "rgba(99,102,241,0.3)" },
+  convList: { flexGrow: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" },
+  emptySidebar: { color: "#71717a", fontSize: "13px", textAlign: "center", marginTop: "20px" },
   convItem: {
-    padding: "12px",
+    padding: "10px 12px",
     borderRadius: "8px",
     border: "1px solid transparent",
     cursor: "pointer",
-    transition: "all 0.15s ease-out"
+    transition: "all 0.15s ease-out",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
   },
+  convItemMain: { minWidth: 0, flexGrow: 1 },
   convItemTitle: {
     fontSize: "13px",
     fontWeight: "500",
     color: "#e4e4e7",
     whiteSpace: "nowrap",
     overflow: "hidden",
-    textOverflow: "ellipsis"
+    textOverflow: "ellipsis",
   },
-  convItemSub: {
-    fontSize: "11px",
+  convItemSub: { fontSize: "11px", color: "#71717a", marginTop: "4px" },
+  convActions: { display: "flex", gap: "2px", flexShrink: 0 },
+  iconBtn: {
+    background: "transparent",
+    border: "none",
     color: "#71717a",
-    marginTop: "4px"
+    cursor: "pointer",
+    fontSize: "12px",
+    padding: "2px 4px",
+    borderRadius: "4px",
+    lineHeight: 1,
   },
   feedWrapper: {
     display: "flex",
@@ -410,16 +562,16 @@ const styles: { [key: string]: React.CSSProperties } = {
     flexGrow: 1,
     minWidth: 0,
     height: "100%",
-    position: "relative"
+    position: "relative",
   },
   header: {
-    height: "64px",
+    minHeight: "64px",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     padding: "0 24px",
     borderBottom: "1px solid var(--panel-border)",
-    background: "rgba(10, 10, 15, 0.3)"
+    background: "rgba(10, 10, 15, 0.3)",
   },
   headerTitle: {
     fontSize: "16px",
@@ -427,7 +579,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     color: "#fff",
     display: "flex",
     alignItems: "center",
-    gap: "12px"
+    gap: "12px",
   },
   liveStat: {
     fontSize: "12px",
@@ -435,92 +587,54 @@ const styles: { [key: string]: React.CSSProperties } = {
     border: "1px solid rgba(99, 102, 241, 0.3)",
     borderRadius: "4px",
     color: "#818cf8",
-    padding: "3px 8px"
+    padding: "3px 8px",
   },
-  modelSelectorWrapper: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px"
-  },
-  selectorLabel: {
+  deviceBadge: {
     fontSize: "12px",
-    color: "#71717a"
+    background: "rgba(34, 197, 94, 0.15)",
+    border: "1px solid rgba(34, 197, 94, 0.35)",
+    borderRadius: "4px",
+    color: "#4ade80",
+    padding: "3px 8px",
+    cursor: "pointer",
   },
-  modelSelect: {
-    padding: "6px 12px",
+  modelSelectorWrapper: { display: "flex", alignItems: "center", gap: "8px" },
+  selectorLabel: { fontSize: "12px", color: "#71717a" },
+  modelSelect: { padding: "6px 12px", fontSize: "13px", minWidth: "160px" },
+  copyModelBtn: {
+    padding: "6px 10px",
     fontSize: "13px",
-    minWidth: "160px"
+    background: "transparent",
+    color: "#a1a1aa",
+    border: "1px solid var(--panel-border)",
+    borderRadius: "6px",
+    cursor: "pointer",
   },
-  messageArea: {
-    flexGrow: 1,
-    overflowY: "auto",
-    padding: "30px 24px",
-    display: "flex",
-    flexDirection: "column"
-  },
-  emptyState: {
-    margin: "auto",
-    textAlign: "center",
-    maxWidth: "360px"
-  },
-  emptyIcon: {
-    fontSize: "48px",
-    marginBottom: "16px"
-  },
-  messageList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "20px",
-    width: "100%",
-    maxWidth: "800px",
-    margin: "0 auto"
-  },
-  messageRow: {
-    display: "flex",
-    width: "100%"
-  },
-  messageBubble: {
-    maxWidth: "85%",
-    borderRadius: "12px",
-    padding: "16px 20px",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
-  },
-  messageSender: {
-    fontSize: "11px",
-    color: "#71717a",
-    marginBottom: "6px",
-    fontWeight: "600",
-    textTransform: "uppercase"
-  },
+  poolDetail: { padding: "12px 24px", borderBottom: "1px solid var(--panel-border)", background: "rgba(10,10,15,0.3)" },
+  poolDetailTitle: { fontSize: "12px", color: "#a1a1aa", marginBottom: "10px" },
+  poolNodeRow: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" },
+  poolNodeLabel: { fontSize: "12px", color: "#e4e4e7", width: "160px", flexShrink: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  poolBarTrack: { flexGrow: 1, height: "8px", background: "rgba(255,255,255,0.06)", borderRadius: "4px", overflow: "hidden" },
+  poolBarFill: { height: "100%", background: "linear-gradient(90deg, #6366f1, #22c55e)" },
+  poolNodePct: { fontSize: "12px", color: "#a1a1aa", width: "40px", textAlign: "right" },
+  messageArea: { flexGrow: 1, overflowY: "auto", padding: "30px 24px", display: "flex", flexDirection: "column" },
+  emptyState: { margin: "auto", textAlign: "center", maxWidth: "360px" },
+  emptyIcon: { fontSize: "48px", marginBottom: "16px" },
+  messageList: { display: "flex", flexDirection: "column", gap: "20px", width: "100%", maxWidth: "800px", margin: "0 auto" },
+  messageRow: { display: "flex", width: "100%" },
+  messageBubble: { maxWidth: "85%", borderRadius: "12px", padding: "16px 20px", boxShadow: "0 4px 12px rgba(0,0,0,0.15)" },
+  messageSender: { fontSize: "11px", color: "#71717a", marginBottom: "6px", fontWeight: "600", textTransform: "uppercase" },
   thinking: { fontSize: "14px", color: "#a1a1aa", fontStyle: "italic" },
-  messageText: {
-    fontSize: "14px",
-    color: "#f4f4f5",
-    lineHeight: "1.6"
-  },
-  codeBlock: {
-    marginTop: "12px",
-    marginBottom: "12px"
-  },
-  inputArea: {
-    padding: "20px 24px",
-    background: "rgba(10, 10, 15, 0.4)",
-    borderTop: "1px solid var(--panel-border)"
-  },
-  inputForm: {
-    display: "flex",
-    gap: "12px",
-    width: "100%",
-    maxWidth: "800px",
-    margin: "0 auto"
-  },
-  textInput: {
-    flexGrow: 1,
-    padding: "12px 16px",
-    fontSize: "14px"
-  },
-  sendBtn: {
+  messageText: { fontSize: "14px", color: "#f4f4f5", lineHeight: "1.6" },
+  inputArea: { padding: "20px 24px", background: "rgba(10, 10, 15, 0.4)", borderTop: "1px solid var(--panel-border)" },
+  inputForm: { display: "flex", gap: "12px", width: "100%", maxWidth: "800px", margin: "0 auto" },
+  textInput: { flexGrow: 1, padding: "12px 16px", fontSize: "14px" },
+  sendBtn: { padding: "0 24px", fontSize: "14px" },
+  stopBtn: {
     padding: "0 24px",
-    fontSize: "14px"
-  }
+    fontSize: "14px",
+    background: "rgba(239, 68, 68, 0.15)",
+    border: "1px solid rgba(239, 68, 68, 0.4)",
+    color: "#f87171",
+  },
 };

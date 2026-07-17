@@ -1,39 +1,80 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { SetupPage } from "./pages/SetupPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { PoolPage } from "./pages/PoolPage";
 import { ApiAccessPage } from "./pages/ApiAccessPage";
+import { SettingsPage, syncBackgroundSetting } from "./pages/SettingsPage";
 import { api } from "./api/endpoints";
 
 function App() {
   const [setupCompleted, setSetupCompleted] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"chat" | "models" | "pool" | "api">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "models" | "pool" | "api" | "settings">("chat");
   const [isServerHealthy, setIsServerHealthy] = useState<boolean>(false);
   const [hardwareSummary, setHardwareSummary] = useState<string>("Detecting...");
 
+  // Count consecutive health-poll failures. The backend is single-threaded
+  // while generating a large response, so an occasional slow/failed health
+  // poll is normal — we only show "disconnected" after several in a row to
+  // stop the status dot flapping red mid-generation (or on tab switch).
+  const failuresRef = useRef<number>(0);
+  const hwLoadedRef = useRef<boolean>(false);
+  const FAILURE_THRESHOLD = 3;
+
   useEffect(() => {
-    // Check if onboarding completed
     const completed = localStorage.getItem("localy_setup_completed") === "true";
     setSetupCompleted(completed);
+    // Push the persisted background-run preference to the Rust side so the
+    // window-close behaviour is correct from the first close.
+    syncBackgroundSetting();
+  }, []);
 
-    // Run health check and fetch specs if setup done
+  useEffect(() => {
     checkServerHealth();
-    
     const interval = setInterval(checkServerHealth, 5000);
-    return () => clearInterval(interval);
+    // Re-check immediately when the user returns to the window/tab, so the
+    // status reflects reality without waiting for the next poll tick.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") checkServerHealth();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [setupCompleted]);
 
   const checkServerHealth = async () => {
     try {
       const health = await api.getHealth();
-      setIsServerHealthy(health.status === "ok");
-      
-      if (setupCompleted) {
-        const hw = await api.getHardwareReport();
-        setHardwareSummary(`${hw.cpu.brand.split("@")[0].trim()} | ${hw.memory.total_gb.toFixed(0)}GB`);
+      if (health.status === "ok") {
+        failuresRef.current = 0;
+        setIsServerHealthy(true);
+
+        // Hardware specs are static — fetch once after the first healthy poll
+        // rather than every 5s (the heavy call was contributing to timeouts).
+        if (setupCompleted && !hwLoadedRef.current) {
+          hwLoadedRef.current = true;
+          try {
+            const hw = await api.getHardwareReport();
+            setHardwareSummary(`${hw.cpu.brand.split("@")[0].trim()} | ${hw.memory.total_gb.toFixed(0)}GB`);
+          } catch {
+            hwLoadedRef.current = false; // retry on a later poll
+          }
+        }
+      } else {
+        registerFailure();
       }
     } catch {
+      registerFailure();
+    }
+  };
+
+  const registerFailure = () => {
+    failuresRef.current += 1;
+    if (failuresRef.current >= FAILURE_THRESHOLD) {
       setIsServerHealthy(false);
     }
   };
@@ -54,7 +95,31 @@ function App() {
       {/* Global Sidebar Dashboard Navigation */}
       <div style={styles.navSidebar} className="glass-panel">
         <div style={styles.logoRow}>
-          <span style={styles.logoIcon}>☄️</span>
+          <span style={styles.logoIcon}>
+            <svg width="26" height="26" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="localyBg" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#6366f1" />
+                  <stop offset="1" stopColor="#4f46e5" />
+                </linearGradient>
+              </defs>
+              <rect x="96" y="96" width="832" height="832" rx="200" fill="url(#localyBg)" />
+              <g stroke="#e0e7ff" strokeWidth="46" strokeLinecap="round" fill="none">
+                <line x1="360" y1="300" x2="360" y2="660" />
+                <line x1="360" y1="660" x2="700" y2="660" />
+              </g>
+              <g fill="#ffffff">
+                <circle cx="360" cy="300" r="70" />
+                <circle cx="360" cy="660" r="70" />
+                <circle cx="700" cy="660" r="70" />
+              </g>
+              <g fill="#4ade80">
+                <circle cx="360" cy="300" r="30" />
+                <circle cx="360" cy="660" r="30" />
+                <circle cx="700" cy="660" r="30" />
+              </g>
+            </svg>
+          </span>
           <span style={styles.logoText}>Localy</span>
         </div>
 
@@ -102,6 +167,17 @@ function App() {
           >
             <span style={styles.menuIcon}>🔌</span> API Access
           </div>
+
+          <div
+            onClick={() => setActiveTab("settings")}
+            style={{
+              ...styles.menuItem,
+              background: activeTab === "settings" ? "rgba(99, 102, 241, 0.1)" : "transparent",
+              color: activeTab === "settings" ? "#fff" : "var(--text-secondary)"
+            }}
+          >
+            <span style={styles.menuIcon}>⚙️</span> Settings
+          </div>
         </div>
 
         {/* Bottom Panel Status & Hardware Specs */}
@@ -129,6 +205,7 @@ function App() {
         {activeTab === "models" && <ModelsPage />}
         {activeTab === "pool" && <PoolPage />}
         {activeTab === "api" && <ApiAccessPage />}
+        {activeTab === "settings" && <SettingsPage />}
       </div>
 
     </div>
@@ -162,8 +239,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     padding: "0 8px"
   },
   logoIcon: {
-    fontSize: "24px",
-    textShadow: "0 0 10px rgba(99, 102, 241, 0.5)"
+    display: "flex",
+    alignItems: "center",
+    filter: "drop-shadow(0 0 8px rgba(99, 102, 241, 0.45))"
   },
   logoText: {
     fontSize: "18px",
