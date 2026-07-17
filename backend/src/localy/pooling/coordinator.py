@@ -78,12 +78,14 @@ class Coordinator:
         self._error: str | None = None
         self._started_at = 0.0
         self._ready_at = 0.0
+        self._last_log_at = 0.0       # wall time of the last log line (stall detection)
         self._progress_frac: float | None = None  # 0..1 if parseable from output
         self._bytes_total = 0         # approx bytes to stream to remote workers
         self._node_count = 0
         self._remote_count = 0
         self._last_log = ""
         self._log_tail: deque[str] = deque(maxlen=200)
+        self._cancelling = False      # user asked to stop; suppress "failed" reporting
         self._reader: threading.Thread | None = None
         self._monitor: threading.Thread | None = None
 
@@ -168,6 +170,8 @@ class Coordinator:
             self._model_id = model_id
             self._phase = "starting"
             self._stage = "Starting coordinator…"
+            self._cancelling = False
+            self._last_log_at = time.time()
             self._ready = False
             self._error = None
             self._started_at = time.time()
@@ -206,6 +210,7 @@ class Coordinator:
         low = line.lower()
         with self._lock:
             self._last_log = line[:300]
+            self._last_log_at = time.time()
             self._log_tail.append(line[:300])
 
             if self._phase == "starting":
@@ -237,8 +242,12 @@ class Coordinator:
         deadline = time.time() + timeout
         health = f"{self.proxy_url}/health"
         while time.time() < deadline:
+            if self._cancelling:
+                return  # user cancelled; stop() handles state
             proc = self._proc
             if proc is None or proc.poll() is not None:
+                if self._cancelling:
+                    return
                 self._fail("The pooled server process exited during startup.")
                 return
             try:
@@ -284,10 +293,16 @@ class Coordinator:
                 end = self._ready_at if self._ready_at else time.time()
                 elapsed = max(0.0, end - self._started_at)
             frac = self._progress_frac
-            bytes_sent = int(self._bytes_total * frac) if (frac is not None and self._bytes_total) else None
-            eta = None
-            if active and frac is not None and 0.0 < frac < 1.0 and elapsed > 1.0:
-                eta = elapsed * (1.0 - frac) / frac
+            # Seconds since the loader last emitted anything — a stall indicator.
+            # llama.cpp is silent while streaming weights to a slow RPC worker,
+            # so a large value here means "still working on a long step", not dead.
+            idle = 0.0
+            if active and self._last_log_at:
+                idle = max(0.0, time.time() - self._last_log_at)
+            # NOTE: percent is a coarse *phase* estimate parsed from log markers,
+            # not a byte counter. We deliberately do NOT fabricate an ETA or a
+            # bytes-transferred figure from it (that was misleading) — llama.cpp
+            # doesn't expose real transfer progress over RPC.
             return {
                 "active": active,
                 "phase": self._phase,
@@ -296,16 +311,19 @@ class Coordinator:
                 "error": self._error,
                 "model": self._model_id,
                 "elapsed_s": round(elapsed, 1),
-                "eta_s": round(eta, 1) if eta is not None else None,
+                "eta_s": None,
                 "percent": round(frac * 100, 1) if frac is not None else None,
+                "percent_is_estimate": True,
+                "idle_s": round(idle, 1),
                 "bytes_total": self._bytes_total or None,
-                "bytes_sent": bytes_sent,
+                "bytes_sent": None,
                 "node_count": self._node_count,
                 "remote_count": self._remote_count,
                 "last_log": self._last_log or None,
             }
 
     def stop(self) -> None:
+        self._cancelling = True
         if self._proc is None:
             with self._lock:
                 self._phase = "idle"
