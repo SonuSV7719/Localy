@@ -21,10 +21,12 @@ async function request<T>(
   const url = `${API_BASE_URL}${path}`;
 
   // Attach a timeout so a hung request cannot wedge the UI. If the caller
-  // passed their own signal, honour it too.
+  // passed their own signal, honour it too. A timeoutMs <= 0 disables the
+  // timeout entirely — required for genuinely long operations like loading a
+  // model across the pool, which can take minutes to stream weights to workers.
   const controller = new AbortController();
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
   if (options?.signal) {
     options.signal.addEventListener("abort", () => controller.abort(), { once: true });
   }
@@ -45,7 +47,7 @@ async function request<T>(
     }
     throw new APIError(0, e?.message || "Network error", "network");
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -66,12 +68,14 @@ async function request<T>(
   return response.json() as Promise<T>;
 }
 
+type ReqOptions = RequestInit & { timeoutMs?: number };
+
 export const apiClient = {
-  get<T>(path: string, options?: RequestInit): Promise<T> {
+  get<T>(path: string, options?: ReqOptions): Promise<T> {
     return request<T>(path, { ...options, method: "GET" });
   },
 
-  post<T>(path: string, body: any, options?: RequestInit): Promise<T> {
+  post<T>(path: string, body: any, options?: ReqOptions): Promise<T> {
     return request<T>(path, {
       ...options,
       method: "POST",
@@ -79,7 +83,7 @@ export const apiClient = {
     });
   },
 
-  delete<T>(path: string, body?: any, options?: RequestInit): Promise<T> {
+  delete<T>(path: string, body?: any, options?: ReqOptions): Promise<T> {
     return request<T>(path, {
       ...options,
       method: "DELETE",

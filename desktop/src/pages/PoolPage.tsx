@@ -16,6 +16,10 @@ export const PoolPage: React.FC = () => {
   // Live layer split for the model currently served across the pool.
   const [livePlan, setLivePlan] = useState<ShardPlan | null>(null);
   const livePlanModelRef = React.useRef<string | null>(null);
+  // Rich feedback for the (slow, multi-minute) "Run pooled" operation.
+  const [loadPhase, setLoadPhase] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [loadElapsed, setLoadElapsed] = useState<number>(0);
+  const loadStartRef = React.useRef<number>(0);
 
   useEffect(() => {
     refreshStatus();
@@ -23,6 +27,36 @@ export const PoolPage: React.FC = () => {
     const t = setInterval(refreshStatus, 5000);
     return () => clearInterval(t);
   }, []);
+
+  // Tick an elapsed-time counter while a pooled load is in progress.
+  useEffect(() => {
+    if (loadPhase !== "loading") return;
+    const t = setInterval(() => setLoadElapsed(Math.floor((Date.now() - loadStartRef.current) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [loadPhase]);
+
+  // Staged, reassuring status message based on how long the load has run.
+  const loadStatusMessage = (secs: number): string => {
+    if (secs < 6) return "Preparing the shard plan…";
+    if (secs < 20) return "Spawning coordinator and connecting to worker devices…";
+    if (secs < 60) return "Streaming model layers to devices…";
+    return "Still streaming layers — large models over WiFi can take a few minutes.";
+  };
+
+  // Turn backend errors into something a user can act on.
+  const prettyPoolError = (e: any): string => {
+    const msg = e?.message || String(e);
+    if (e?.code === "timeout") {
+      return "The request timed out on the client, but the pool may still be loading — watch the Pool Status above.";
+    }
+    if (/no remote workers/i.test(msg)) {
+      return "No other devices in the pool yet. On another device, open Localy → Device Pool → “Share this device”, then Scan and Join it here first.";
+    }
+    if (/does not fit/i.test(msg)) {
+      return `This model doesn't fit across the current pool. ${msg}`;
+    }
+    return msg;
+  };
 
   const refreshStatus = async () => {
     try {
@@ -119,7 +153,7 @@ export const PoolPage: React.FC = () => {
     try {
       setPlan(await api.poolFit(selectedModel));
     } catch (e: any) {
-      setError(e.message);
+      setError(prettyPoolError(e));
     } finally {
       setBusy("");
     }
@@ -127,16 +161,21 @@ export const PoolPage: React.FC = () => {
 
   const runPooled = async () => {
     if (!selectedModel) return;
-    setBusy("load");
     setError("");
+    setLoadElapsed(0);
+    loadStartRef.current = Date.now();
+    setLoadPhase("loading");
     try {
       const p = await api.loadPooled(selectedModel);
       setPlan(p);
-      refreshStatus();
+      setLoadPhase("done");
+      await refreshStatus();
     } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setBusy("");
+      setError(prettyPoolError(e));
+      setLoadPhase("error");
+      // The coordinator may still have come up despite a client-side error —
+      // refresh so the UI reflects reality either way.
+      refreshStatus();
     }
   };
 
@@ -144,6 +183,7 @@ export const PoolPage: React.FC = () => {
     setBusy("stop");
     try {
       await api.unloadPooled();
+      setLoadPhase("idle");
       refreshStatus();
     } finally {
       setBusy("");
@@ -319,18 +359,48 @@ export const PoolPage: React.FC = () => {
         <div style={styles.card} className="glass-panel">
           <div style={styles.cardTitle}>Run a Model Across the Pool</div>
           <div style={styles.rowGap}>
-            <select style={styles.select} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+            <select
+              style={styles.select}
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={loadPhase === "loading"}
+            >
               {models.map((m) => (
                 <option key={m.id} value={m.id}>{m.name} ({m.parameter_count_billions.toFixed(1)}B)</option>
               ))}
             </select>
-            <button className="btn btn-secondary" onClick={checkFit} disabled={busy === "fit"}>
-              Check fit
+            <button className="btn btn-secondary" onClick={checkFit} disabled={busy === "fit" || loadPhase === "loading"}>
+              {busy === "fit" ? "Checking…" : "Check fit"}
             </button>
-            <button className="btn btn-primary" onClick={runPooled} disabled={busy === "load" || !plan?.fits}>
-              {busy === "load" ? "Starting…" : "Run pooled"}
+            <button
+              className="btn btn-primary"
+              onClick={runPooled}
+              disabled={loadPhase === "loading" || (!!plan && !plan.fits)}
+            >
+              {loadPhase === "loading" ? "Loading…" : "Run pooled"}
             </button>
           </div>
+
+          {/* Live progress for the slow pooled-load operation */}
+          {loadPhase === "loading" && (
+            <div style={styles.loadingBanner}>
+              <span className="pulse-indicator" style={styles.spinnerDot} />
+              <div style={styles.loadingTextCol}>
+                <div style={styles.loadingTitle}>
+                  Loading <b>{selectedModel}</b> across {status?.node_count ?? 1} device(s)… ({loadElapsed}s)
+                </div>
+                <div style={styles.loadingSub}>{loadStatusMessage(loadElapsed)}</div>
+                <div style={styles.loadingHint}>You can leave this tab — loading continues in the background.</div>
+              </div>
+            </div>
+          )}
+
+          {loadPhase === "done" && status?.pooled_active && (
+            <div style={styles.successBanner}>
+              ✅ <b>{status.active_model}</b> is now serving across the pool. Open the <b>Chat</b> tab and select
+              this model to use it — requests route to the pool automatically.
+            </div>
+          )}
 
           {plan && (
             <div style={{ ...styles.planBox, borderColor: plan.fits ? "var(--semantic-success)" : "var(--semantic-error)" }}>
@@ -405,4 +475,36 @@ const styles: { [key: string]: React.CSSProperties } = {
   barFill: { height: "100%", background: "var(--accent-gradient)", borderRadius: "4px" },
   splitPct: { fontSize: "11px", color: "#a1a1aa", width: "36px", textAlign: "right" },
   rec: { fontSize: "12px", color: "#a1a1aa", marginTop: "4px", lineHeight: 1.4 },
+  loadingBanner: {
+    display: "flex",
+    gap: "12px",
+    alignItems: "flex-start",
+    marginTop: "16px",
+    padding: "14px 16px",
+    borderRadius: "10px",
+    background: "rgba(99,102,241,0.1)",
+    border: "1px solid rgba(99,102,241,0.3)",
+  },
+  spinnerDot: {
+    width: "10px",
+    height: "10px",
+    borderRadius: "50%",
+    background: "#818cf8",
+    marginTop: "4px",
+    flexShrink: 0,
+  },
+  loadingTextCol: { display: "flex", flexDirection: "column", gap: "3px" },
+  loadingTitle: { fontSize: "13px", color: "#e4e4e7" },
+  loadingSub: { fontSize: "12px", color: "#a1a1aa" },
+  loadingHint: { fontSize: "11px", color: "#71717a", marginTop: "2px" },
+  successBanner: {
+    marginTop: "16px",
+    padding: "14px 16px",
+    borderRadius: "10px",
+    background: "rgba(34,197,94,0.1)",
+    border: "1px solid rgba(34,197,94,0.3)",
+    fontSize: "13px",
+    color: "#d4d4d8",
+    lineHeight: 1.5,
+  },
 };
