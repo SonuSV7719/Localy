@@ -147,12 +147,13 @@ export const PoolPage: React.FC = () => {
   };
 
   const joinManual = async () => {
-    if (!manualAddr.includes(":")) {
-      setError("Enter address as host:port");
+    const [host, portStr] = manualAddr.split(":");
+    const port = parseInt(portStr, 10);
+    if (!host || !portStr || Number.isNaN(port) || port < 1 || port > 65535) {
+      setError("Enter address as host:port (e.g. 192.168.1.5:50052)");
       return;
     }
-    const [host, port] = manualAddr.split(":");
-    await join(host, parseInt(port, 10), "Manual");
+    await join(host.trim(), port, "Manual");
     setManualAddr("");
   };
 

@@ -4,6 +4,7 @@ Localy FastAPI dependency injection providers.
 
 from __future__ import annotations
 
+import hmac
 from typing import TYPE_CHECKING
 from fastapi import Depends, HTTPException, Request, status
 
@@ -63,7 +64,8 @@ async def verify_api_key(
 
     key = _extract_key(request)
     store = get_key_store(settings.config_path)
-    if store.is_valid(key) or (settings.api_key and key == settings.api_key):
+    static_ok = bool(settings.api_key) and hmac.compare_digest(str(key or ""), str(settings.api_key))
+    if store.is_valid(key) or static_ok:
         return key
 
     raise HTTPException(

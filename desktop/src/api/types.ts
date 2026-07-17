@@ -80,6 +80,11 @@ export interface RegistryVariant {
   sha256: string;
   download_url: string;
   is_downloaded: boolean;
+  // Per-variant hardware fit, computed by the backend from the real file size.
+  fit_level?: "fits_well" | "fits_tight" | "does_not_fit";
+  fit_explanation?: string;
+  max_context?: number;
+  recommendations?: string[];
 }
 
 export interface RegistryModel {

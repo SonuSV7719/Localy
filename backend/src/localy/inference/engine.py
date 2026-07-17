@@ -46,12 +46,23 @@ def find_mmproj(model_path: Path) -> Path | None:
     model file's own directory. Returns None for text-only models.
     """
     try:
-        for f in model_path.parent.glob("*.gguf"):
-            if "mmproj" in f.name.lower() or "mproj" in f.name.lower():
+        cands = [
+            f for f in model_path.parent.glob("*.gguf")
+            if "mmproj" in f.name.lower() or "mproj" in f.name.lower()
+        ]
+        if not cands:
+            return None
+        # All models share one directory, so prefer a projector whose name shares
+        # a distinctive token with this model's filename; else fall back to the
+        # first. Avoids pairing a text-ish name with an unrelated model's mmproj.
+        tokens = [t for t in re.split(r"[-_.]", model_path.stem.lower()) if len(t) >= 3]
+        for f in cands:
+            fl = f.name.lower()
+            if any(t in fl for t in tokens):
                 return f
+        return cands[0]
     except OSError:
-        pass
-    return None
+        return None
 
 
 def looks_like_vision_model(model_id: str) -> bool:
@@ -102,6 +113,9 @@ class InferenceEngine:
         self._config: InferenceConfig | None = None
         self._is_vision = False
         self._lock = asyncio.Lock()
+        # Retain references to streaming worker tasks; asyncio only holds weak
+        # refs, so an un-retained task can be GC'd mid-run and hang the consumer.
+        self._stream_tasks: set[asyncio.Task] = set()
 
     @property
     def is_vision(self) -> bool:
@@ -289,6 +303,14 @@ class InferenceEngine:
 
     async def generate_stream(self, request: InferenceRequest) -> AsyncGenerator[StreamChunk, None]:
         """Generate streaming response as an async generator."""
+        await self._lock.acquire()
+        try:
+            async for chunk in self._stream_locked(request):
+                yield chunk
+        finally:
+            self._lock.release()
+
+    async def _stream_locked(self, request: InferenceRequest) -> AsyncGenerator[StreamChunk, None]:
         if self._llm is None:
             raise NoModelLoadedError("No model is currently loaded. Load a model first.")
 
@@ -317,9 +339,10 @@ class InferenceEngine:
             except Exception as e:
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", e))
 
-        # Start background thread for inference streaming
-        worker_task = asyncio.to_thread(_sync_stream_worker)
-        asyncio.create_task(worker_task)
+        # Start background thread for inference streaming. Retain the task ref.
+        task = asyncio.create_task(asyncio.to_thread(_sync_stream_worker))
+        self._stream_tasks.add(task)
+        task.add_done_callback(self._stream_tasks.discard)
 
         start_time = time.perf_counter()
         tokens_generated = 0
@@ -429,6 +452,21 @@ class InferenceEngine:
         generation_config: GenerationConfig,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Generate streaming chat response as an async generator."""
+        # Hold the engine lock for the whole stream so a concurrent request that
+        # loads/unloads a different model can't free the native context out from
+        # under the running generation (use-after-free / native crash).
+        await self._lock.acquire()
+        try:
+            async for chunk in self._chat_stream_locked(messages, generation_config):
+                yield chunk
+        finally:
+            self._lock.release()
+
+    async def _chat_stream_locked(
+        self,
+        messages: list[dict[str, Any]],
+        generation_config: GenerationConfig,
+    ) -> AsyncGenerator[StreamChunk, None]:
         if self._llm is None:
             raise NoModelLoadedError("No model is currently loaded. Load a model first.")
 
@@ -460,9 +498,10 @@ class InferenceEngine:
             except Exception as e:
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", e))
 
-        # Start background thread for inference streaming
-        worker_task = asyncio.to_thread(_sync_chat_stream_worker)
-        asyncio.create_task(worker_task)
+        # Start background thread for inference streaming. Retain the task ref.
+        task = asyncio.create_task(asyncio.to_thread(_sync_chat_stream_worker))
+        self._stream_tasks.add(task)
+        task.add_done_callback(self._stream_tasks.discard)
 
         start_time = time.perf_counter()
         tokens_generated = 0

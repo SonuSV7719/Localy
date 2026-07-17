@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
-import { RegistryModel, FitAssessment } from "../api/types";
+import { RegistryModel } from "../api/types";
 import { DownloadProgress } from "../components/DownloadProgress";
 import { ProgressStats } from "../lib/downloadTracker";
 
@@ -13,8 +13,6 @@ export const ModelsPage: React.FC = () => {
   const [selectedQuants, setSelectedQuants] = useState<{ [modelId: string]: string }>({});
 
   // Dynamic Fit Assessments per model ID + Quant
-  // e.g. { "smollm2:2b-Q4_K_M": FitAssessment }
-  const [fitAssessments, setFitAssessments] = useState<{ [key: string]: FitAssessment }>({});
 
   // Download status state: smoothed stats + status per model id.
   const [downloads, setDownloads] = useState<{
@@ -129,29 +127,16 @@ export const ModelsPage: React.FC = () => {
       const data = await api.getModels();
       setModels(data);
 
-      // Initialize selected quants and pre-fetch assessments
+      // Default the selected quant per model (fit is read per-variant from the
+      // response — each variant already carries its own real-size fit_level).
       const quants: { [modelId: string]: string } = {};
-      const assessments: { [key: string]: FitAssessment } = {};
-
       for (const m of data) {
         if (m.variants.length > 0) {
-          // Select downloaded variant first, or default to first variant
           const downloadedVar = m.variants.find(v => v.is_downloaded);
-          const defaultQuant = downloadedVar ? downloadedVar.quantization : m.variants[0].quantization;
-          quants[m.id] = defaultQuant;
-
-          // Fetch fit assessment
-          try {
-            const fit = await api.getModelFit(m.id);
-            assessments[`${m.id}-${defaultQuant}`] = fit;
-          } catch (e) {
-            console.error(e);
-          }
+          quants[m.id] = downloadedVar ? downloadedVar.quantization : m.variants[0].quantization;
         }
       }
-
       setSelectedQuants(quants);
-      setFitAssessments(assessments);
     } catch (e) {
       console.error("Failed to fetch model catalog:", e);
     } finally {
@@ -159,20 +144,9 @@ export const ModelsPage: React.FC = () => {
     }
   };
 
-  // Handle dropdown quant changes
-  const handleQuantChange = async (modelId: string, quant: string) => {
+  // Handle dropdown quant changes (fit is per-variant, already in `models`).
+  const handleQuantChange = (modelId: string, quant: string) => {
     setSelectedQuants({ ...selectedQuants, [modelId]: quant });
-
-    const key = `${modelId}-${quant}`;
-    if (!fitAssessments[key]) {
-      try {
-        // Run a dynamic check
-        const fit = await api.getModelFit(modelId);
-        setFitAssessments({ ...fitAssessments, [key]: fit });
-      } catch (e) {
-        console.error(e);
-      }
-    }
   };
 
   // Start a background download (runs server-side; keeps going across tabs).
@@ -315,8 +289,15 @@ export const ModelsPage: React.FC = () => {
             {models.map(m => {
               const selectedQuant = selectedQuants[m.id] || "";
               const activeVariant = m.variants.find(v => v.quantization === selectedQuant);
-              const key = `${m.id}-${selectedQuant}`;
-              const assessment = fitAssessments[key];
+              // Per-variant fit from the backend (based on the real file size).
+              const assessment = activeVariant?.fit_level
+                ? {
+                    fit_level: activeVariant.fit_level,
+                    explanation: activeVariant.fit_explanation,
+                    max_context: activeVariant.max_context,
+                    recommendations: activeVariant.recommendations,
+                  }
+                : undefined;
               const download = downloads[m.id];
               const isDownloaded = activeVariant?.is_downloaded || false;
               
@@ -367,7 +348,7 @@ export const ModelsPage: React.FC = () => {
                         {getFitText(assessment.fit_level)}
                       </div>
                       <ul style={styles.recommendationsList}>
-                        {assessment.recommendations.map((rec, idx) => (
+                        {(assessment.recommendations ?? []).map((rec, idx) => (
                           <li key={idx} style={styles.recItem}>{rec}</li>
                         ))}
                       </ul>

@@ -33,6 +33,8 @@ async def health_check() -> dict[str, str]:
 
 # Cap extracted text so a huge document can't blow past the model's context.
 _MAX_EXTRACT_CHARS = 30000
+# Cap the upload itself so a huge file can't OOM the process buffering it.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
 @system_router.post("/system/extract", dependencies=[Depends(verify_api_key)])
@@ -40,8 +42,14 @@ async def extract_document(file: UploadFile = File(...)) -> dict[str, Any]:
     """Extract plain text from an uploaded document so it can be used as chat
     context. Handles PDFs (via pypdf) and any UTF-8/Latin-1 text or code file.
     Text is truncated to a safe length; the caller is told if it was cut."""
-    raw = await file.read()
     name = (file.filename or "file").strip()
+    # Read with a hard size limit rather than buffering an unbounded upload.
+    raw = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > _MAX_UPLOAD_BYTES:
+        return {
+            "filename": name, "text": "", "chars": 0, "truncated": False,
+            "error": f"File too large (>{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
+        }
     lower = name.lower()
 
     text = ""

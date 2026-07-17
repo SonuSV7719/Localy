@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Robustness audit fixes across backend, desktop, and Android:**
+  - Backend: streaming inference now holds the engine lock so a concurrent model load/unload can't free the native context mid-stream (use-after-free); streaming worker tasks are retained (no GC-hang); `/system/extract` caps upload size (no OOM); pooled-proxy handles non-JSON upstream responses; API-key comparison is constant-time; mmproj matching prefers the projector whose name matches the model.
+  - Desktop: model-fit badges are now truly per-quantization (were showing the same model-level result for every quant); a single oversized conversation is no longer wiped from storage; the "streaming" bubble only shows on the chat that's actually generating; delete/archive picks the next chat from the current tab; manual pool-join validates the port; image-only prompts no longer leak internal markers to the model.
+  - Android: all SQLite access moved off the UI thread (no ANR on long chats); switching chats mid-stream can no longer corrupt or misfile the reply into the wrong session; mDNS server resolves are serialized so a second PC reliably appears.
+
 - Connection-resilience improvements for more reliable streaming and pooled sessions across flaky networks.
 - Model **fit assessment is now exact for weights**: it uses each variant's real Hugging Face file size instead of a parameter×quantization estimate. This fixes inaccurate badges for **search-and-added models** whose parameter count couldn't be parsed from the repo name (previously they could falsely show "fits well"). When neither a real size nor a parameter count is available, the badge is now cautionary rather than a false green. Covered by unit tests.
 - "Run pooled" now gives clear, staged feedback (elapsed time + status) instead of appearing to do nothing, and no longer aborts early: the client request timeout is disabled for the long model-load operation (previously it timed out after 12s while the backend kept loading). Errors are surfaced with actionable messages, and a success banner points users to the Chat tab.

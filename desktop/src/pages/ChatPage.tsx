@@ -30,6 +30,9 @@ export const ChatPage: React.FC = () => {
   // Message input state
   const [input, setInput] = useState<string>("");
   const [generating, setGenerating] = useState<boolean>(false);
+  // Which conversation is actively streaming (so the "streaming" bubble only
+  // shows on that chat, not on whatever chat you switch to mid-generation).
+  const [generatingConvId, setGeneratingConvId] = useState<string | null>(null);
 
   // Speed statistics
   const [tokSec, setTokSec] = useState<number>(0);
@@ -165,7 +168,8 @@ export const ChatPage: React.FC = () => {
     const updated = conversations.filter((c) => c.id !== id);
     saveConversations(updated);
     if (activeConvId === id) {
-      const next = updated.find((c) => !c.archived);
+      // Pick the next chat from whichever tab is currently shown.
+      const next = updated.find((c) => !!c.archived === showArchived);
       setActiveConvId(next ? next.id : null);
     }
   };
@@ -175,7 +179,8 @@ export const ChatPage: React.FC = () => {
     const updated = conversations.map((c) => (c.id === id ? { ...c, archived: !c.archived } : c));
     saveConversations(updated);
     if (activeConvId === id) {
-      const next = updated.find((c) => !c.archived);
+      // The chat just left the current tab; select another from this tab.
+      const next = updated.find((c) => c.id !== id && !!c.archived === showArchived);
       setActiveConvId(next ? next.id : null);
     }
   };
@@ -272,7 +277,10 @@ export const ChatPage: React.FC = () => {
     const sendImages = images.slice();
     const apiMessages: ApiMessage[] = baseMessages.map((m) => ({ role: m.role, content: m.content }));
     if (sendImages.length > 0) {
-      const parts: ContentPart[] = [{ type: "text", text: content || "Describe the image(s)." }];
+      // Text part = typed text + any document context, but NOT the image-name
+      // markers; fall back to a default prompt when only images were attached.
+      const textForModel = attachments.length ? buildUserContent(input, attachments, []) : input;
+      const parts: ContentPart[] = [{ type: "text", text: textForModel.trim() || "Describe the image(s)." }];
       sendImages.forEach((im) => parts.push({ type: "image_url", image_url: { url: im.dataUrl } }));
       apiMessages[apiMessages.length - 1] = { role: "user", content: parts };
     }
@@ -295,6 +303,7 @@ export const ChatPage: React.FC = () => {
     setAttachments([]);
     setImages([]);
     setGenerating(true);
+    setGeneratingConvId(convId);
     setWaiting(true);
     setGeneratedTokens(0);
     setTokSec(0);
@@ -332,12 +341,14 @@ export const ChatPage: React.FC = () => {
       },
       () => {
         setGenerating(false);
+        setGeneratingConvId(null);
         setWaiting(false);
         setAssistant(acc, true);
         abortRef.current = null;
       },
       (err) => {
         setGenerating(false);
+        setGeneratingConvId(null);
         setWaiting(false);
         setAssistant(acc || `⚠ ${err.message}`, true);
         abortRef.current = null;
@@ -491,7 +502,8 @@ export const ChatPage: React.FC = () => {
             <div style={styles.messageList}>
               {activeConv.messages.map((msg, idx) => {
                 const isUser = msg.role === "user";
-                const isStreaming = !isUser && generating && idx === activeConv.messages.length - 1;
+                const isStreaming =
+                  !isUser && generating && generatingConvId === activeConv.id && idx === activeConv.messages.length - 1;
                 const parsed = isUser ? null : parseThinking(msg.content);
 
                 return (
