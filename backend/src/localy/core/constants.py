@@ -155,6 +155,9 @@ SUPPORTED_MODEL_EXTENSIONS = {".gguf"}
 # ===========================
 
 MDNS_SERVICE_TYPE = "_localy._tcp.local."
+# The Localy API server advertises itself under a distinct type so client apps
+# (e.g. the Android chat screen) can auto-discover the PC on the LAN.
+MDNS_API_SERVICE_TYPE = "_localy-api._tcp.local."
 POOL_HEALTH_CHECK_INTERVAL_SECONDS = 10
 POOL_STALE_THRESHOLD_SECONDS = 30
 

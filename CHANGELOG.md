@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Connection-resilience improvements for more reliable streaming and pooled sessions across flaky networks.
 - "Run pooled" now gives clear, staged feedback (elapsed time + status) instead of appearing to do nothing, and no longer aborts early: the client request timeout is disabled for the long model-load operation (previously it timed out after 12s while the backend kept loading). Errors are surfaced with actionable messages, and a success banner points users to the Chat tab.
 - Pooled model loading is now **non-blocking and tracked on the server**: the Device Pool page shows a live progress panel (percent, elapsed, ETA, data transferred to workers, worker count, latest log) that **survives tab switches and window close** — loading continues on the server and the panel resumes when you return. Chat only routes to the pool once the coordinator is actually ready.
+- The Localy server now advertises itself on the LAN over mDNS (`_localy-api._tcp`) so client apps can auto-discover it.
+- **Android app: a Chat screen.** From the phone you can now chat with a model served by your PC — including one pooled across the phone and other devices. Auto-discovers the PC on WiFi, remembers the server + API key, streams responses, and shows a full live pooled-load progress panel (percent, elapsed, ETA, data transferred, status).
 
 ## [0.1.0]
 

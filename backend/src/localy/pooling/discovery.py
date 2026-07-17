@@ -15,7 +15,7 @@ import socket
 from dataclasses import dataclass
 from typing import Callable
 
-from localy.core.constants import MDNS_SERVICE_TYPE
+from localy.core.constants import MDNS_API_SERVICE_TYPE, MDNS_SERVICE_TYPE
 from localy.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -85,6 +85,53 @@ class WorkerAdvertiser:
         self._zc = Zeroconf()
         self._zc.register_service(self._info)
         logger.info("worker_advertised", name=name, ip=ip, port=self._port)
+
+    def stop(self) -> None:
+        if self._zc and self._info:
+            try:
+                self._zc.unregister_service(self._info)
+            finally:
+                self._zc.close()
+        self._zc = None
+        self._info = None
+
+
+class ServerAdvertiser:
+    """Advertises the Localy API server over mDNS so LAN client apps (e.g. the
+    Android chat screen) can auto-discover the PC's host:port. Auth is still a
+    per-request API key — discovery only removes the need to type the IP."""
+
+    def __init__(self, port: int, label: str = "") -> None:
+        self._port = port
+        self._label = label
+        self._zc: "Zeroconf | None" = None
+        self._info: "ServiceInfo | None" = None
+
+    def start(self) -> None:
+        if not _ZEROCONF_AVAILABLE:
+            logger.warning("zeroconf_unavailable_skipping_server_advertise")
+            return
+        ip = _local_ip()
+        hostname = socket.gethostname()
+        name = f"{hostname}.{MDNS_API_SERVICE_TYPE}"
+        self._info = ServiceInfo(
+            MDNS_API_SERVICE_TYPE,
+            name,
+            addresses=[socket.inet_aton(ip)],
+            port=self._port,
+            properties={
+                "label": self._label or hostname,
+                "host": ip,
+                "api": "openai",  # OpenAI-compatible chat at /v1/chat/completions
+            },
+        )
+        try:
+            self._zc = Zeroconf()
+            self._zc.register_service(self._info)
+            logger.info("api_server_advertised", name=name, ip=ip, port=self._port)
+        except Exception as e:  # pragma: no cover - mDNS best-effort
+            logger.warning("api_server_advertise_failed", error=str(e))
+            self._zc = None
 
     def stop(self) -> None:
         if self._zc and self._info:
