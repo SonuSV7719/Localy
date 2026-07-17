@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Attach documents in chat.** Attach PDFs, text, Markdown, code, JSON/CSV, etc.; Localy extracts the text (server-side, PDFs via pypdf) and feeds it to the model as context. Works with any text model — the chat bubble shows filename chips, and long files are truncated to fit the context. (Image/vision attachments for capable models are planned next.)
+- Model Catalog search shows a loading spinner and its results dropdown now closes on outside-click / Esc.
+
 - Rich chat experience: Markdown rendering, collapsible reasoning/thinking sections, stop-generation control, and delete/archive/rename for conversations, with quota-safe history handling.
 - Real per-device pool contribution analysis, so each machine's share of a pooled run is measured rather than estimated.
 - Opt-in autostart and a system-tray daemon mode for running Localy in the background.
