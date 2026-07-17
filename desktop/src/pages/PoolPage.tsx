@@ -403,7 +403,7 @@ export const PoolPage: React.FC = () => {
                   <span style={styles.loadingTitle}>
                     Loading <b>{load?.model || selectedModel}</b> across {load?.node_count || status?.node_count || 1} device(s)
                   </span>
-                  <span style={styles.loadingPhase}>{phaseLabel(load?.phase)}</span>
+                  <span style={styles.loadingPhase}>{load?.stage || phaseLabel(load?.phase)}</span>
                 </div>
 
                 {/* Progress bar: real % if the loader reports it, else indeterminate */}

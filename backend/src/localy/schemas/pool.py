@@ -18,6 +18,7 @@ class PoolNodeResponse(BaseModel):
 class PoolLoadProgress(BaseModel):
     active: bool = False          # a load is in progress right now
     phase: str = "idle"           # idle | starting | loading | ready | error | stopped
+    stage: str | None = None      # granular human label (e.g. "Loading tensors")
     ready: bool = False
     error: str | None = None
     model: str | None = None

@@ -260,7 +260,7 @@ class ChatActivity : AppCompatActivity() {
         binding.poolPanel.visibility = View.VISIBLE
 
         if (active && loading != null) {
-            val phase = loading.optString("phase", "loading")
+            val stage = loading.optString("stage", "").ifBlank { phaseLabel(loading.optString("phase", "loading")) }
             val model = loading.optString("model", "")
             val remote = loading.optInt("remote_count", 0)
             val elapsed = loading.optDouble("elapsed_s", 0.0)
@@ -269,7 +269,7 @@ class ChatActivity : AppCompatActivity() {
             val bytesTotal = if (loading.isNull("bytes_total")) 0L else loading.optLong("bytes_total")
             val bytesSent = if (loading.isNull("bytes_sent")) 0L else loading.optLong("bytes_sent")
 
-            binding.poolTitle.text = "Loading $model across ${nodeCount} device(s) — ${phaseLabel(phase)}"
+            binding.poolTitle.text = "Loading $model across ${nodeCount} device(s) — $stage"
             binding.poolProgress.isIndeterminate = pct == null
             if (pct != null) binding.poolProgress.progress = pct.toInt()
 
