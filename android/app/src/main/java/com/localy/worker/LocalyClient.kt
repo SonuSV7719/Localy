@@ -66,6 +66,24 @@ class LocalyClient(
         }
     }
 
+    /** Ids of models that accept images (supports_vision), from /system/models. */
+    fun visionModelIds(): Set<String> = try {
+        client.newCall(newRequest("/system/models").get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) emptySet()
+            else {
+                val arr = JSONArray(resp.body?.string().orEmpty())
+                val out = mutableSetOf<String>()
+                for (i in 0 until arr.length()) {
+                    val m = arr.getJSONObject(i)
+                    if (m.optBoolean("supports_vision")) out.add(m.optString("id"))
+                }
+                out
+            }
+        }
+    } catch (e: Exception) {
+        emptySet()
+    }
+
     /** Current pool status (including the `loading` progress block), or null. */
     fun poolStatus(): JSONObject? = try {
         client.newCall(newRequest("/pool/status").get().build()).execute().use { resp ->
@@ -84,6 +102,7 @@ class LocalyClient(
     fun streamChat(
         model: String,
         messages: List<Pair<String, String>>,
+        imageUrls: List<String> = emptyList(),
         onToken: (String) -> Unit,
         onDone: () -> Unit,
         onError: (String) -> Unit,
@@ -93,8 +112,23 @@ class LocalyClient(
             put("stream", true)
             put("temperature", 0.7)
             put("messages", JSONArray().apply {
-                messages.forEach { (role, content) ->
-                    put(JSONObject().put("role", role).put("content", content))
+                messages.forEachIndexed { i, (role, content) ->
+                    val obj = JSONObject().put("role", role)
+                    if (i == messages.lastIndex && imageUrls.isNotEmpty()) {
+                        // Send the current turn as OpenAI multimodal parts.
+                        val parts = JSONArray()
+                        parts.put(JSONObject().put("type", "text").put("text", content))
+                        imageUrls.forEach { url ->
+                            parts.put(
+                                JSONObject().put("type", "image_url")
+                                    .put("image_url", JSONObject().put("url", url))
+                            )
+                        }
+                        obj.put("content", parts)
+                    } else {
+                        obj.put("content", content)
+                    }
+                    put(obj)
                 }
             })
         }
