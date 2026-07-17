@@ -107,10 +107,12 @@ class PoolService:
     ) -> PoolNode:
         """Manually add a remote worker to the pool (Stage 1)."""
         node_id = f"{host}:{port}"
-        # Without discovery metadata we can't probe the remote's RAM, so fall
-        # back to this device's offered budget as a conservative estimate.
+        # Without discovery metadata we can't probe the remote's RAM. Assuming
+        # this PC's budget badly over-estimates a phone/tablet, which then gets
+        # assigned too many layers and OOM-crashes mid-serving. Use a modest,
+        # safe default instead; discovery-based joins pass the real budget.
         if budget_bytes is None:
-            budget_bytes = compute_local_capacity(self._settings).offered_bytes
+            budget_bytes = 2 * 1024 * 1024 * 1024  # 2 GB conservative default
         node = PoolNode(
             node_id=node_id,
             host=host,

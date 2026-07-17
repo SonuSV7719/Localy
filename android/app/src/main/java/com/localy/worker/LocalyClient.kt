@@ -152,10 +152,15 @@ class LocalyClient(
                         val payloadStr = trimmed.removePrefix("data:").trim()
                         if (payloadStr == "[DONE]") { onDone(); return@Thread }
                         try {
-                            val delta = JSONObject(payloadStr)
+                            val deltaObj = JSONObject(payloadStr)
                                 .optJSONArray("choices")?.optJSONObject(0)
-                                ?.optJSONObject("delta")?.optString("content").orEmpty()
-                            if (delta.isNotEmpty()) onToken(delta)
+                                ?.optJSONObject("delta")
+                            // Guard isNull: Android's optString returns the literal
+                            // "null" for a JSON-null content (role-only/final chunks).
+                            if (deltaObj != null && !deltaObj.isNull("content")) {
+                                val delta = deltaObj.optString("content")
+                                if (delta.isNotEmpty()) onToken(delta)
+                            }
                         } catch (_: Exception) { /* ignore malformed keepalive lines */ }
                     }
                     onDone()
