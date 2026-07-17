@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
 import { apiClient } from "../api/client";
-import { RegistryModel, ChatMessage, PoolStatus, ShardPlan } from "../api/types";
+import { RegistryModel, ChatMessage, PoolStatus, ShardPlan, ApiMessage, ContentPart } from "../api/types";
 import { saveListWithTrim } from "../lib/safeStorage";
 import { parseThinking, parseUserContent, buildUserContent } from "../lib/messageContent";
 import { Markdown } from "../components/Markdown";
@@ -46,11 +46,14 @@ export const ChatPage: React.FC = () => {
   // Document attachments staged for the next message (extracted to text).
   const [attachments, setAttachments] = useState<{ name: string; text: string; truncated: boolean }[]>([]);
   const [attaching, setAttaching] = useState<boolean>(false);
+  // Staged images (base64 data URLs), only usable with vision-capable models.
+  const [images, setImages] = useState<{ name: string; dataUrl: string }[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const quotaWarnedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load models and conversations on mount
   useEffect(() => {
@@ -229,23 +232,53 @@ export const ChatPage: React.FC = () => {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  // --- image attachments (vision models only) -------------------------------
+
+  const onPickImages = () => imageInputRef.current?.click();
+
+  const handleImagesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    files.forEach((f) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = String(reader.result || "");
+        if (url) setImages((prev) => [...prev, { name: f.name, dataUrl: url }]);
+      };
+      reader.readAsDataURL(f); // -> data:image/...;base64,...
+    });
+  };
+
+  const removeImage = (idx: number) => setImages((prev) => prev.filter((_, i) => i !== idx));
+
   // Send message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!input.trim() && attachments.length === 0) || generating || !activeConvId || !selectedModel) return;
+    if ((!input.trim() && attachments.length === 0 && images.length === 0) || generating || !activeConvId || !selectedModel) return;
 
     const convId = activeConvId;
     const activeConv = getActiveConv();
     if (!activeConv) return;
 
-    // The message the model sees includes the extracted document text as
-    // context; the bubble displays just the typed text + filename chips.
-    const content = buildUserContent(input, attachments);
+    // Stored/displayed content: typed text + file/image chips (image data is
+    // NOT persisted — too large for localStorage and only needed this turn).
+    const content = buildUserContent(input, attachments, images.map((im) => im.name));
     const userMsg: ChatMessage = { role: "user", content };
     const baseMessages = [...activeConv.messages, userMsg];
     const assistantIndex = baseMessages.length;
+
+    // What we actually send to the model. For vision models with staged images,
+    // the current turn is sent as OpenAI multimodal parts (text + image_url).
+    const sendImages = images.slice();
+    const apiMessages: ApiMessage[] = baseMessages.map((m) => ({ role: m.role, content: m.content }));
+    if (sendImages.length > 0) {
+      const parts: ContentPart[] = [{ type: "text", text: content || "Describe the image(s)." }];
+      sendImages.forEach((im) => parts.push({ type: "image_url", image_url: { url: im.dataUrl } }));
+      apiMessages[apiMessages.length - 1] = { role: "user", content: parts };
+    }
+
     const isFirst = activeConv.messages.length === 0;
-    const titleSource = input.trim() || (attachments[0] ? attachments[0].name : "New chat");
+    const titleSource = input.trim() || (attachments[0]?.name) || (images[0]?.name) || "New chat";
     const title = isFirst ? titleSource.slice(0, 30) + (titleSource.length > 30 ? "…" : "") : activeConv.title;
 
     setConversations((prev) => {
@@ -260,6 +293,7 @@ export const ChatPage: React.FC = () => {
 
     setInput("");
     setAttachments([]);
+    setImages([]);
     setGenerating(true);
     setWaiting(true);
     setGeneratedTokens(0);
@@ -286,7 +320,7 @@ export const ChatPage: React.FC = () => {
     abortRef.current = controller;
 
     await apiClient.streamChat(
-      { model: selectedModel, messages: baseMessages, temperature: 0.7 },
+      { model: selectedModel, messages: apiMessages, temperature: 0.7 },
       (token) => {
         setWaiting(false);
         acc += token;
@@ -319,6 +353,9 @@ export const ChatPage: React.FC = () => {
 
   // Device pool: is more than one device contributing?
   const multiDevice = !!pool && pool.pooled_active && pool.node_count > 1;
+
+  // Does the selected model accept images?
+  const visionModel = models.find((m) => m.id === selectedModel)?.supports_vision === true;
 
   return (
     <div style={styles.chatWrapper}>
@@ -531,6 +568,17 @@ export const ChatPage: React.FC = () => {
               {attaching && <span style={styles.stagedChipMuted}>Extracting…</span>}
             </div>
           )}
+          {/* Staged images (thumbnails) */}
+          {images.length > 0 && (
+            <div style={styles.stagedRow}>
+              {images.map((im, i) => (
+                <span key={i} style={styles.imageChip}>
+                  <img src={im.dataUrl} alt={im.name} style={styles.thumb} />
+                  <button type="button" style={styles.chipX} onClick={() => removeImage(i)}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
           <form style={styles.inputForm} onSubmit={handleSendMessage}>
             <input
               ref={fileInputRef}
@@ -539,6 +587,14 @@ export const ChatPage: React.FC = () => {
               accept=".txt,.md,.markdown,.pdf,.json,.csv,.log,.py,.js,.ts,.tsx,.jsx,.java,.kt,.go,.rs,.c,.cpp,.h,.cs,.rb,.php,.sh,.yaml,.yml,.toml,.xml,.html,.css"
               style={{ display: "none" }}
               onChange={handleFilesSelected}
+            />
+            <input
+              ref={imageInputRef}
+              type="file"
+              multiple
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={handleImagesSelected}
             />
             <button
               type="button"
@@ -549,6 +605,17 @@ export const ChatPage: React.FC = () => {
             >
               📎
             </button>
+            {visionModel && (
+              <button
+                type="button"
+                title="Attach an image (this model supports vision)"
+                onClick={onPickImages}
+                disabled={generating || !activeConvId}
+                style={styles.attachBtn}
+              >
+                🖼
+              </button>
+            )}
             <input
               type="text"
               value={input}
@@ -565,7 +632,7 @@ export const ChatPage: React.FC = () => {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={(!input.trim() && attachments.length === 0) || !activeConvId}
+                disabled={(!input.trim() && attachments.length === 0 && images.length === 0) || !activeConvId}
                 style={styles.sendBtn}
               >
                 Send
@@ -713,6 +780,8 @@ const styles: { [key: string]: React.CSSProperties } = {
   stagedChipMuted: { fontSize: "12px", color: "#a1a1aa", fontStyle: "italic", alignSelf: "center" },
   truncTag: { color: "#fbbf24" },
   chipX: { background: "transparent", border: "none", color: "#a5b4fc", cursor: "pointer", fontSize: "14px", lineHeight: 1, padding: "0 0 0 2px" },
+  imageChip: { position: "relative", display: "inline-flex", alignItems: "center" },
+  thumb: { width: "48px", height: "48px", objectFit: "cover", borderRadius: "6px", border: "1px solid var(--panel-border)" },
   attachChipRow: { display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" },
   attachChipSent: { fontSize: "11px", color: "#e0e7ff", background: "rgba(255,255,255,0.12)", borderRadius: "5px", padding: "2px 7px" },
   attachBtn: { padding: "0 14px", fontSize: "18px", background: "transparent", color: "#a1a1aa", border: "1px solid var(--panel-border)", borderRadius: "8px", cursor: "pointer" },

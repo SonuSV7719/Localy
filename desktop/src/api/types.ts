@@ -97,9 +97,20 @@ export interface ChatMessage {
   content: string;
 }
 
+// OpenAI multimodal content parts (for vision models).
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+// A message as sent to the API: content may be a string or multimodal parts.
+export interface ApiMessage {
+  role: string;
+  content: string | ContentPart[];
+}
+
 export interface ChatCompletionRequest {
   model: string;
-  messages: ChatMessage[];
+  messages: ApiMessage[];
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
