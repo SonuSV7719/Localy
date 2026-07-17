@@ -126,7 +126,7 @@ export const PoolPage: React.FC = () => {
     setError("");
     try {
       for (const w of discovered) {
-        await api.joinPool(w.host, w.port, w.label);
+        await api.joinPool(w.host, w.port, w.label, w.budget_gb);
       }
       await refreshStatus();
     } catch (e: any) {
@@ -136,10 +136,10 @@ export const PoolPage: React.FC = () => {
     }
   };
 
-  const join = async (host: string, port: number, label = "") => {
+  const join = async (host: string, port: number, label = "", budgetGb?: number | null) => {
     setError("");
     try {
-      await api.joinPool(host, port, label);
+      await api.joinPool(host, port, label, budgetGb);
       refreshStatus();
     } catch (e: any) {
       setError(e.message);
@@ -343,7 +343,7 @@ export const PoolPage: React.FC = () => {
                       {inPool ? (
                         <span style={styles.joinedTag}>✓ in pool</span>
                       ) : (
-                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label)}>
+                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label, w.budget_gb)}>
                           Join
                         </button>
                       )}

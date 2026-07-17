@@ -136,9 +136,12 @@ export const api = {
     return apiClient.get<DiscoveredWorker[]>(`/pool/discover?auto_join=${autoJoin}`);
   },
 
-  /** Manually add a worker by address. */
-  async joinPool(host: string, port: number, label: string = ""): Promise<any> {
-    return apiClient.post<any>("/pool/join", { host, port, label });
+  /** Add a worker by address. Pass budgetGb from discovery so the planner uses
+   *  the worker's REAL memory (otherwise the backend falls back to a guess). */
+  async joinPool(host: string, port: number, label: string = "", budgetGb?: number | null): Promise<any> {
+    const body: Record<string, unknown> = { host, port, label };
+    if (budgetGb && budgetGb > 0) body.budget_mib = Math.round(budgetGb * 1024);
+    return apiClient.post<any>("/pool/join", body);
   },
 
   /** Remove a worker from the pool. */
