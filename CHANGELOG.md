@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Vision (images) — backend foundation.** The API now accepts OpenAI-style multimodal message content (text + `image_url` parts); the engine loads a vision chat handler when a model ships an `mmproj` projector (Qwen2.5-VL, LLaVA, MiniCPM-V, Moondream, …), and text-only models safely flatten image parts to a placeholder. Models are flagged `supports_vision` so clients can gate an image button. (Image UI in the desktop/mobile chat and end-to-end verification with a real vision model are the next step.)
 - **Attach documents in chat.** Attach PDFs, text, Markdown, code, JSON/CSV, etc.; Localy extracts the text (server-side, PDFs via pypdf) and feeds it to the model as context. Works with any text model — the chat bubble shows filename chips, and long files are truncated to fit the context. (Image/vision attachments for capable models are planned next.)
 - Model Catalog search shows a loading spinner and its results dropdown now closes on outside-click / Esc.
 - **Android chat sessions.** The phone chat now keeps multiple conversations in on-device **SQLite**, with a sessions drawer to switch chats and **rename / archive / delete** — all stored locally on the device. Plus **document attachments** on mobile (PDF/text/code) via the same extraction as desktop, and a branded launcher icon + splash screen.

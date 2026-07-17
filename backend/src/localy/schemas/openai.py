@@ -10,10 +10,15 @@ from pydantic import BaseModel, Field
 
 
 class ChatMessage(BaseModel):
-    """A message in the chat conversation history."""
+    """A message in the chat conversation history.
+
+    `content` is normally a string, but may also be an OpenAI-style list of
+    content parts (``{"type": "text", ...}`` / ``{"type": "image_url", ...}``)
+    for multimodal (vision) models. Text-only models flatten the parts to text.
+    """
 
     role: Literal["system", "user", "assistant"]
-    content: str
+    content: str | list[dict[str, Any]]
 
 
 class ChatCompletionRequest(BaseModel):

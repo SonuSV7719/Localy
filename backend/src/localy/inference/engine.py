@@ -39,6 +39,50 @@ logger = get_logger(__name__)
 _engine_instance: InferenceEngine | None = None
 
 
+def find_mmproj(model_path: Path) -> Path | None:
+    """Locate a multimodal projector (mmproj) GGUF for a vision model.
+
+    llama.cpp vision models ship a companion `*mmproj*.gguf`. We look in the
+    model file's own directory. Returns None for text-only models.
+    """
+    try:
+        for f in model_path.parent.glob("*.gguf"):
+            if "mmproj" in f.name.lower() or "mproj" in f.name.lower():
+                return f
+    except OSError:
+        pass
+    return None
+
+
+def build_vision_chat_handler(model_id: str, mmproj_path: Path) -> Any | None:
+    """Construct the right llama-cpp-python vision chat handler for a model.
+
+    Selection is by model-id family; falls back to the LLaVA-1.5 handler, which
+    covers the most common projector format. Returns None on any failure so the
+    caller can load the model as text-only rather than crash.
+    """
+    name = model_id.lower()
+    try:
+        from llama_cpp import llama_chat_format as fmt
+
+        clip = str(mmproj_path)
+        if "qwen2.5-vl" in name or "qwen2-vl" in name or "qwenvl" in name or "qwen-vl" in name:
+            return fmt.Qwen25VLChatHandler(clip_model_path=clip, verbose=False)
+        if "minicpm" in name:
+            return fmt.MiniCPMv26ChatHandler(clip_model_path=clip, verbose=False)
+        if "moondream" in name:
+            return fmt.MoondreamChatHandler(clip_model_path=clip, verbose=False)
+        if "nanollava" in name or "nano-llava" in name:
+            return fmt.NanoLlavaChatHandler(clip_model_path=clip, verbose=False)
+        if "llava-1.6" in name or "llava16" in name or "llava-v1.6" in name:
+            return fmt.Llava16ChatHandler(clip_model_path=clip, verbose=False)
+        # Sensible default for other/unknown vision models.
+        return fmt.Llava15ChatHandler(clip_model_path=clip, verbose=False)
+    except Exception as e:  # noqa: BLE001 - never let vision setup break loading
+        logger.warning("vision_handler_init_failed", model_id=model_id, error=str(e))
+        return None
+
+
 class InferenceEngine:
     """Wrapper around llama_cpp.Llama to manage model lifecycle and inference."""
 
@@ -48,7 +92,13 @@ class InferenceEngine:
         self._loaded_model_id: str | None = None
         self._loaded_model_path: Path | None = None
         self._config: InferenceConfig | None = None
+        self._is_vision = False
         self._lock = asyncio.Lock()
+
+    @property
+    def is_vision(self) -> bool:
+        """True if the loaded model was loaded with a vision chat handler."""
+        return self._is_vision
 
     @property
     def loaded_model_id(self) -> str | None:
@@ -117,9 +167,18 @@ class InferenceEngine:
                 # Import here to avoid loading native libs on startup
                 from llama_cpp import Llama
 
+                # Detect a vision projector; if present, load with the matching
+                # multimodal chat handler so images are supported. Falls back to
+                # a plain text load if anything about vision setup fails.
+                mmproj = find_mmproj(model_path)
+                vision_handler = build_vision_chat_handler(model_id, mmproj) if mmproj else None
+                self._is_vision = vision_handler is not None
+                if self._is_vision:
+                    logger.info("loading_vision_model", model_id=model_id, mmproj=str(mmproj))
+
                 # Execute blockingly in executor thread to keep async loop responsive
                 def _init_llama() -> Llama:
-                    return Llama(
+                    kwargs: dict[str, Any] = dict(
                         model_path=str(model_path),
                         n_ctx=config.n_ctx,
                         n_threads=config.n_threads,
@@ -131,6 +190,9 @@ class InferenceEngine:
                         flash_attn=config.flash_attn,
                         verbose=False,
                     )
+                    if vision_handler is not None:
+                        kwargs["chat_handler"] = vision_handler
+                    return Llama(**kwargs)
 
                 self._llm = await asyncio.to_thread(_init_llama)
                 self._loaded_model_id = model_id
@@ -160,6 +222,7 @@ class InferenceEngine:
             self._loaded_model_id = None
             self._loaded_model_path = None
             self._config = None
+            self._is_vision = False
             # Force GC and free llama.cpp memory pool
             gc.collect()
             logger.info("model_unloaded")
@@ -274,9 +337,32 @@ class InferenceEngine:
                     )
             queue.task_done()
 
+    def _normalize_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Pass multimodal content through for vision models; flatten it to text
+        for text-only models so a list-content message never breaks them."""
+        if self._is_vision:
+            return messages
+
+        def flatten(content: Any) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                out: list[str] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        out.append(str(part.get("text", "")))
+                    elif part.get("type") == "image_url":
+                        out.append("[image omitted — this model does not support vision]")
+                return "\n".join(out)
+            return str(content)
+
+        return [{**m, "content": flatten(m.get("content"))} for m in messages]
+
     async def generate_chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         generation_config: GenerationConfig,
     ) -> InferenceResponse:
         """Generate chat response for a non-streaming chat request."""
@@ -284,6 +370,7 @@ class InferenceEngine:
             if self._llm is None:
                 raise NoModelLoadedError("No model is currently loaded. Load a model first.")
 
+            messages = self._normalize_messages(messages)
             logger.info("running_chat_inference", message_count=len(messages))
 
             start_time = time.perf_counter()
@@ -330,13 +417,14 @@ class InferenceEngine:
 
     async def generate_chat_stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         generation_config: GenerationConfig,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Generate streaming chat response as an async generator."""
         if self._llm is None:
             raise NoModelLoadedError("No model is currently loaded. Load a model first.")
 
+        messages = self._normalize_messages(messages)
         queue: asyncio.Queue[Any] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
