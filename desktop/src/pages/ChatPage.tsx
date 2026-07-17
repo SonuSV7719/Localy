@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
 import { apiClient } from "../api/client";
-import { RegistryModel, ChatMessage, PoolStatus } from "../api/types";
+import { RegistryModel, ChatMessage, PoolStatus, ShardPlan } from "../api/types";
 import { saveListWithTrim } from "../lib/safeStorage";
 import { parseThinking } from "../lib/messageContent";
 import { Markdown } from "../components/Markdown";
 import { ThinkingBlock } from "../components/ThinkingBlock";
+import { DeviceContribution } from "../components/DeviceContribution";
 
 interface Conversation {
   id: string;
@@ -38,6 +39,9 @@ export const ChatPage: React.FC = () => {
   // Device pool status (for the multi-device contribution indicator)
   const [pool, setPool] = useState<PoolStatus | null>(null);
   const [poolExpanded, setPoolExpanded] = useState<boolean>(false);
+  // Real per-device layer split for the currently-served pooled model.
+  const [activePlan, setActivePlan] = useState<ShardPlan | null>(null);
+  const plannedModelRef = useRef<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -63,7 +67,23 @@ export const ChatPage: React.FC = () => {
 
   const refreshPool = async () => {
     try {
-      setPool(await api.getPoolStatus());
+      const status = await api.getPoolStatus();
+      setPool(status);
+      // Fetch the true layer split once per active model (it's static for a
+      // given pool+model), so the chat can show who computes what.
+      if (status.pooled_active && status.active_model && status.node_count > 1) {
+        if (plannedModelRef.current !== status.active_model) {
+          plannedModelRef.current = status.active_model;
+          try {
+            setActivePlan(await api.poolFit(status.active_model));
+          } catch {
+            setActivePlan(null);
+          }
+        }
+      } else {
+        plannedModelRef.current = null;
+        setActivePlan(null);
+      }
     } catch {
       /* pool status is best-effort */
     }
@@ -257,8 +277,6 @@ export const ChatPage: React.FC = () => {
 
   // Device pool: is more than one device contributing?
   const multiDevice = !!pool && pool.pooled_active && pool.node_count > 1;
-  const poolNodes = pool?.nodes ?? [];
-  const totalBudget = poolNodes.reduce((s, n) => s + (n.budget_gb || 0), 0) || 1;
 
   return (
     <div style={styles.chatWrapper}>
@@ -369,26 +387,10 @@ export const ChatPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Multi-device contribution detail */}
-        {multiDevice && poolExpanded && (
-          <div style={styles.poolDetail} className="glass-panel">
-            <div style={styles.poolDetailTitle}>
-              Distributed across {pool!.node_count} devices · {pool!.total_budget_gb.toFixed(1)} GB combined memory
-            </div>
-            {poolNodes.map((n) => {
-              const share = ((n.budget_gb || 0) / totalBudget) * 100;
-              return (
-                <div key={n.node_id} style={styles.poolNodeRow}>
-                  <span style={styles.poolNodeLabel}>
-                    {n.is_local ? "🖥 This device" : `💻 ${n.label || n.address}`}
-                  </span>
-                  <div style={styles.poolBarTrack}>
-                    <div style={{ ...styles.poolBarFill, width: `${share}%` }} />
-                  </div>
-                  <span style={styles.poolNodePct}>{share.toFixed(0)}%</span>
-                </div>
-              );
-            })}
+        {/* Multi-device contribution detail (real layer split) */}
+        {multiDevice && poolExpanded && activePlan && (
+          <div className="glass-panel">
+            <DeviceContribution plan={activePlan} status={pool} compact />
           </div>
         )}
 
@@ -610,13 +612,6 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderRadius: "6px",
     cursor: "pointer",
   },
-  poolDetail: { padding: "12px 24px", borderBottom: "1px solid var(--panel-border)", background: "rgba(10,10,15,0.3)" },
-  poolDetailTitle: { fontSize: "12px", color: "#a1a1aa", marginBottom: "10px" },
-  poolNodeRow: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" },
-  poolNodeLabel: { fontSize: "12px", color: "#e4e4e7", width: "160px", flexShrink: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  poolBarTrack: { flexGrow: 1, height: "8px", background: "rgba(255,255,255,0.06)", borderRadius: "4px", overflow: "hidden" },
-  poolBarFill: { height: "100%", background: "linear-gradient(90deg, #6366f1, #22c55e)" },
-  poolNodePct: { fontSize: "12px", color: "#a1a1aa", width: "40px", textAlign: "right" },
   messageArea: { flexGrow: 1, overflowY: "auto", padding: "30px 24px", display: "flex", flexDirection: "column" },
   emptyState: { margin: "auto", textAlign: "center", maxWidth: "360px" },
   emptyIcon: { fontSize: "48px", marginBottom: "16px" },

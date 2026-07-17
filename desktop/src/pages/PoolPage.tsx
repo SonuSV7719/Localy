@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { api } from "../api/endpoints";
 import { PoolStatus, ShardPlan, DiscoveredWorker, RegistryModel } from "../api/types";
+import { DeviceContribution } from "../components/DeviceContribution";
 
 export const PoolPage: React.FC = () => {
   const [status, setStatus] = useState<PoolStatus | null>(null);
@@ -12,6 +13,9 @@ export const PoolPage: React.FC = () => {
   const [manualAddr, setManualAddr] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [scanned, setScanned] = useState<boolean>(false);
+  // Live layer split for the model currently served across the pool.
+  const [livePlan, setLivePlan] = useState<ShardPlan | null>(null);
+  const livePlanModelRef = React.useRef<string | null>(null);
 
   useEffect(() => {
     refreshStatus();
@@ -22,7 +26,23 @@ export const PoolPage: React.FC = () => {
 
   const refreshStatus = async () => {
     try {
-      setStatus(await api.getPoolStatus());
+      const s = await api.getPoolStatus();
+      setStatus(s);
+      // Auto-load the live contribution analysis whenever a model is being
+      // served across >1 device (refetched only when the active model changes).
+      if (s.pooled_active && s.active_model && s.node_count > 1) {
+        if (livePlanModelRef.current !== s.active_model) {
+          livePlanModelRef.current = s.active_model;
+          try {
+            setLivePlan(await api.poolFit(s.active_model));
+          } catch {
+            setLivePlan(null);
+          }
+        }
+      } else {
+        livePlanModelRef.current = null;
+        setLivePlan(null);
+      }
     } catch {
       /* backend may be starting */
     }
@@ -200,6 +220,17 @@ export const PoolPage: React.FC = () => {
             <p style={styles.muted}>Connecting to backend…</p>
           )}
         </div>
+
+        {/* Live contribution analysis (only while a model is served pooled) */}
+        {status?.pooled_active && livePlan && livePlan.nodes.length > 0 && (
+          <div style={styles.card} className="glass-panel">
+            <div style={styles.cardTitle}>
+              Live Contribution
+              <span style={styles.activeBadge}>● Who computes what</span>
+            </div>
+            <DeviceContribution plan={livePlan} status={status} />
+          </div>
+        )}
 
         {/* Share this device */}
         <div style={styles.card} className="glass-panel">
