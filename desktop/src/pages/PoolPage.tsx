@@ -419,23 +419,32 @@ export const PoolPage: React.FC = () => {
                 </div>
 
                 <div style={styles.statGrid}>
-                  <div style={styles.stat}><span style={styles.statLabel}>Progress</span>{pct != null ? `${pct.toFixed(0)}%` : "working…"}</div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Stage {pct != null ? "(est.)" : ""}</span>{pct != null ? `~${pct.toFixed(0)}%` : "working…"}</div>
                   <div style={styles.stat}><span style={styles.statLabel}>Elapsed</span>{fmtDuration(load?.elapsed_s)}</div>
-                  <div style={styles.stat}><span style={styles.statLabel}>ETA</span>{load?.eta_s != null ? fmtDuration(load.eta_s) : "estimating…"}</div>
-                  <div style={styles.stat}>
-                    <span style={styles.statLabel}>Transferred</span>
-                    {load?.bytes_total ? `${fmtBytes(load.bytes_sent)} / ${fmtBytes(load.bytes_total)}` : "—"}
-                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>To transfer</span>{load?.bytes_total ? fmtBytes(load.bytes_total) : "—"}</div>
                   <div style={styles.stat}><span style={styles.statLabel}>Worker devices</span>{load?.remote_count ?? status?.remote_count ?? 0}</div>
                 </div>
 
                 {load?.bytes_total ? (
                   <div style={styles.loadingSub}>
-                    ~{fmtBytes(load.bytes_total)} of model weights stream to {load?.remote_count || 1} worker device(s).
+                    ~{fmtBytes(load.bytes_total)} of weights stream to {load?.remote_count || 1} worker device(s). The
+                    percentage is a rough stage estimate — llama.cpp doesn't report exact transfer progress, so there's
+                    no reliable ETA.
                   </div>
                 ) : null}
+                {(load?.idle_s ?? 0) > 20 && (
+                  <div style={styles.stallNote}>
+                    ⏳ Still working — no update from the loader in {fmtDuration(load?.idle_s)}. Streaming weights to a
+                    slow worker (e.g. a phone/tablet over WiFi) can take several minutes with no output.
+                  </div>
+                )}
                 {load?.last_log && <div style={styles.logLine}>{load.last_log}</div>}
-                <div style={styles.loadingHint}>You can switch tabs or close the window (with background mode on) — loading continues on the server.</div>
+                <div style={styles.loadingActions}>
+                  <button className="btn btn-secondary" style={styles.smBtn} onClick={stopPooled} disabled={busy === "stop"}>
+                    {busy === "stop" ? "Cancelling…" : "✕ Cancel load"}
+                  </button>
+                  <span style={styles.loadingHint}>You can switch tabs or close the window (background mode) — loading continues on the server.</span>
+                </div>
               </div>
             );
           })()}
@@ -559,6 +568,8 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   loadingSub: { fontSize: "12px", color: "#a1a1aa" },
   loadingHint: { fontSize: "11px", color: "#71717a" },
+  stallNote: { fontSize: "12px", color: "#fbbf24", lineHeight: 1.5, padding: "6px 0" },
+  loadingActions: { display: "flex", alignItems: "center", gap: "12px", marginTop: "6px", flexWrap: "wrap" },
   errorBanner: {
     marginTop: "16px",
     padding: "14px 16px",

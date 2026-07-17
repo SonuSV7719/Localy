@@ -502,22 +502,23 @@ class ChatActivity : AppCompatActivity() {
             val model = loading.optString("model", "")
             val remote = loading.optInt("remote_count", 0)
             val elapsed = loading.optDouble("elapsed_s", 0.0)
-            val eta = if (loading.isNull("eta_s")) null else loading.optDouble("eta_s")
+            val idle = loading.optDouble("idle_s", 0.0)
             val pct = if (loading.isNull("percent")) null else loading.optDouble("percent")
             val bytesTotal = if (loading.isNull("bytes_total")) 0L else loading.optLong("bytes_total")
-            val bytesSent = if (loading.isNull("bytes_sent")) 0L else loading.optLong("bytes_sent")
 
             binding.poolTitle.text = "Loading $model across $nodeCount device(s) — $stage"
             binding.poolProgress.isIndeterminate = pct == null
             if (pct != null) binding.poolProgress.progress = pct.toInt()
 
+            // percent is a coarse stage estimate; no reliable ETA / transferred bytes.
             val parts = mutableListOf<String>()
-            parts.add(if (pct != null) "${pct.toInt()}%" else "working…")
+            parts.add(if (pct != null) "~${pct.toInt()}% (stage)" else "working…")
             parts.add("elapsed ${fmtDur(elapsed)}")
-            parts.add("ETA ${if (eta != null) fmtDur(eta) else "…"}")
-            if (bytesTotal > 0) parts.add("${fmtBytes(bytesSent)} / ${fmtBytes(bytesTotal)} to $remote worker(s)")
+            if (bytesTotal > 0) parts.add("~${fmtBytes(bytesTotal)} to $remote worker(s)")
             binding.poolStats.text = parts.joinToString("  ·  ")
-            binding.poolLog.text = loading.optString("last_log", "")
+            binding.poolLog.text = if (idle > 20)
+                "⏳ still working — no update in ${fmtDur(idle)} (slow worker over WiFi)"
+            else loading.optString("last_log", "")
         } else if (pooledActive) {
             binding.poolTitle.text = "✅ Serving ${status.optString("active_model")} across $nodeCount devices"
             binding.poolProgress.isIndeterminate = false

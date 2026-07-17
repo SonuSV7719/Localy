@@ -24,7 +24,9 @@ class PoolLoadProgress(BaseModel):
     model: str | None = None
     elapsed_s: float = 0.0
     eta_s: float | None = None
-    percent: float | None = None  # 0..100 if the loader reports it
+    percent: float | None = None  # coarse phase estimate (NOT a byte counter)
+    percent_is_estimate: bool = True
+    idle_s: float = 0.0           # seconds since the loader last logged (stall hint)
     bytes_total: int | None = None
     bytes_sent: int | None = None
     node_count: int = 0
