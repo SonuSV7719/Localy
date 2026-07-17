@@ -1,11 +1,17 @@
 package com.localy.worker
 
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
+import android.widget.EditText
+import android.widget.PopupMenu
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -17,19 +23,30 @@ import okhttp3.Call
 import org.json.JSONObject
 
 /**
- * Chat with a model served by a Localy PC over the LAN — including a model that
- * is pooled across this phone and other devices. Auto-discovers the PC via
- * mDNS; the user pastes an API key once. Shows live pooled-load progress.
+ * Chat with a model served by a Localy PC over the LAN, with on-device chat
+ * sessions (SQLite), document attachments, streaming, and live pooled-load
+ * progress. All chat history is stored locally on the phone.
  */
 class ChatActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityChatBinding
     private val prefs by lazy { ChatPrefs(this) }
+    private val db by lazy { ChatDb(this) }
     private val discovery by lazy { ServerDiscovery(this) }
     private lateinit var client: LocalyClient
 
+    // Current conversation
+    private var currentId: String? = null
     private val items = mutableListOf<ChatItem>()
     private val adapter = ChatAdapter(items)
+
+    // Sessions drawer
+    private val sessions = mutableListOf<Conversation>()
+    private lateinit var sessionAdapter: SessionAdapter
+    private var showingArchived = false
+
+    // Staged document attachments (name -> extracted text)
+    private val attachments = mutableListOf<Pair<String, String>>()
 
     private var discovered: List<ServerDiscovery.Server> = emptyList()
     private var models: List<String> = emptyList()
@@ -43,6 +60,11 @@ class ChatActivity : AppCompatActivity() {
         }
     }
 
+    private val pickFiles =
+        registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+            if (!uris.isNullOrEmpty()) extractFiles(uris)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityChatBinding.inflate(layoutInflater)
@@ -54,10 +76,20 @@ class ChatActivity : AppCompatActivity() {
         binding.messagesList.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         binding.messagesList.adapter = adapter
 
+        sessionAdapter = SessionAdapter(sessions, ::openConversation, ::showSessionMenu)
+        binding.sessionsList.layoutManager = LinearLayoutManager(this)
+        binding.sessionsList.adapter = sessionAdapter
+
         binding.rescanButton.setOnClickListener { startDiscovery() }
         binding.connectButton.setOnClickListener { onConnectTapped() }
         binding.changeServerButton.setOnClickListener { showConnect() }
         binding.sendButton.setOnClickListener { if (streamCall != null) stopStreaming() else send() }
+        binding.menuButton.setOnClickListener { binding.drawer.openDrawer(binding.sessionDrawer) }
+        binding.newChatButton.setOnClickListener { newChat() }
+        binding.tabActive.setOnClickListener { showingArchived = false; loadSessions() }
+        binding.tabArchived.setOnClickListener { showingArchived = true; loadSessions() }
+        binding.attachButton.setOnClickListener { pickFiles.launch("*/*") }
+        binding.attachmentClear.setOnClickListener { attachments.clear(); renderAttachments() }
 
         binding.serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
@@ -74,6 +106,7 @@ class ChatActivity : AppCompatActivity() {
         discovery.stop()
         ui.removeCallbacks(poolPoll)
         streamCall?.cancel()
+        saveCurrent()
     }
 
     // --- connect / discovery ----------------------------------------------
@@ -114,22 +147,13 @@ class ChatActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
-                try {
-                    val list = client.listModels() // also validates URL + key
-                    Result.success(list)
-                } catch (e: Exception) {
-                    Result.failure(e)
-                }
+                try { Result.success(client.listModels()) } catch (e: Exception) { Result.failure(e) }
             }
             binding.connectButton.isEnabled = true
             result.onSuccess { list ->
-                prefs.baseUrl = url
-                prefs.apiKey = key
-                models = list
+                prefs.baseUrl = url; prefs.apiKey = key; models = list
                 showChat()
-            }.onFailure { e ->
-                showConnectError(e.message ?: "Could not reach the server.")
-            }
+            }.onFailure { e -> showConnectError(e.message ?: "Could not reach the server.") }
         }
     }
 
@@ -138,7 +162,7 @@ class ChatActivity : AppCompatActivity() {
         binding.connectError.visibility = View.VISIBLE
     }
 
-    // --- chat --------------------------------------------------------------
+    // --- sessions ----------------------------------------------------------
 
     private fun showChat() {
         binding.connectPanel.visibility = View.GONE
@@ -146,54 +170,209 @@ class ChatActivity : AppCompatActivity() {
         discovery.stop()
         populateModels()
         ui.post(poolPoll)
+
+        loadSessions()
+        val first = db.conversations(false).firstOrNull()
+        if (first != null) openConversation(first) else newChat()
     }
 
+    private fun loadSessions() {
+        sessions.clear()
+        sessions.addAll(db.conversations(showingArchived))
+        sessionAdapter.activeId = currentId
+        sessionAdapter.notifyDataSetChanged()
+        binding.sessionsEmpty.visibility = if (sessions.isEmpty()) View.VISIBLE else View.GONE
+        binding.sessionsEmpty.text = if (showingArchived) "No archived chats." else "No chats yet."
+    }
+
+    private fun newChat() {
+        saveCurrent()
+        val id = System.currentTimeMillis().toString() + "-" + (0..9999).random()
+        db.createConversation(id, "New chat", selectedModel().orEmpty(), System.currentTimeMillis())
+        currentId = id
+        items.clear()
+        attachments.clear(); renderAttachments()
+        adapter.notifyDataSetChanged()
+        showingArchived = false
+        loadSessions()
+        binding.drawer.closeDrawer(binding.sessionDrawer)
+    }
+
+    private fun openConversation(conv: Conversation) {
+        if (conv.id != currentId) saveCurrent()
+        currentId = conv.id
+        items.clear()
+        items.addAll(db.messages(conv.id))
+        attachments.clear(); renderAttachments()
+        adapter.notifyDataSetChanged()
+        scrollToEnd()
+        if (conv.modelId.isNotBlank()) {
+            val idx = models.indexOf(conv.modelId)
+            if (idx >= 0) binding.modelSpinner.setSelection(idx)
+        }
+        sessionAdapter.activeId = currentId
+        sessionAdapter.notifyDataSetChanged()
+        binding.drawer.closeDrawer(binding.sessionDrawer)
+    }
+
+    /** Persist the current conversation's messages + metadata to SQLite. */
+    private fun saveCurrent() {
+        val id = currentId ?: return
+        db.saveMessages(id, items)
+        db.updateMeta(id, deriveTitle(), selectedModel().orEmpty(), System.currentTimeMillis())
+    }
+
+    private fun deriveTitle(): String {
+        val firstUser = items.firstOrNull { it.role == "user" }?.content ?: return "New chat"
+        val text = firstUser.substringBefore(ChatAdapter.ATTACH_DELIM).trim().ifBlank { "Attachment chat" }
+        return if (text.length > 40) text.take(40) + "…" else text
+    }
+
+    private fun showSessionMenu(conv: Conversation, anchor: View) {
+        val menu = PopupMenu(this, anchor)
+        menu.menu.add("Rename")
+        menu.menu.add(if (conv.archived) "Unarchive" else "Archive")
+        menu.menu.add("Delete")
+        menu.setOnMenuItemClickListener { mi ->
+            when (mi.title.toString()) {
+                "Rename" -> promptRename(conv)
+                "Archive", "Unarchive" -> {
+                    db.setArchived(conv.id, !conv.archived)
+                    if (conv.id == currentId && !conv.archived) currentId = null
+                    loadSessions()
+                    ensureOpenConversation()
+                }
+                "Delete" -> confirmDelete(conv)
+            }
+            true
+        }
+        menu.show()
+    }
+
+    private fun promptRename(conv: Conversation) {
+        val input = EditText(this).apply { setText(conv.title) }
+        AlertDialog.Builder(this)
+            .setTitle("Rename chat")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val t = input.text.toString().trim()
+                if (t.isNotEmpty()) { db.rename(conv.id, t); loadSessions() }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDelete(conv: Conversation) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete chat?")
+            .setMessage("“${conv.title}” will be permanently deleted from this device.")
+            .setPositiveButton("Delete") { _, _ ->
+                db.deleteConversation(conv.id)
+                if (conv.id == currentId) currentId = null
+                loadSessions()
+                ensureOpenConversation()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** If the current conversation was archived/deleted, open another or start fresh. */
+    private fun ensureOpenConversation() {
+        if (currentId != null) return
+        val next = db.conversations(false).firstOrNull()
+        if (next != null) openConversation(next) else newChat()
+    }
+
+    // --- models ------------------------------------------------------------
+
     private fun populateModels() {
-        // If we don't have models yet (e.g. returning to a saved server), fetch.
         if (models.isEmpty()) {
             lifecycleScope.launch {
-                val list = withContext(Dispatchers.IO) {
+                models = withContext(Dispatchers.IO) {
                     try { client.listModels() } catch (e: Exception) { emptyList() }
                 }
-                models = list
                 bindModelSpinner()
             }
-        } else {
-            bindModelSpinner()
-        }
+        } else bindModelSpinner()
     }
 
     private fun bindModelSpinner() {
         val labels = models.ifEmpty { listOf("No models available") }
         binding.modelSpinner.adapter =
             ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-        val idx = models.indexOf(prefs.lastModel)
-        if (idx >= 0) binding.modelSpinner.setSelection(idx)
     }
 
-    private fun selectedModel(): String? {
-        val pos = binding.modelSpinner.selectedItemPosition
-        return models.getOrNull(pos)
+    private fun selectedModel(): String? = models.getOrNull(binding.modelSpinner.selectedItemPosition)
+
+    // --- attachments -------------------------------------------------------
+
+    private fun extractFiles(uris: List<Uri>) {
+        lifecycleScope.launch {
+            for (uri in uris) {
+                val name = queryName(uri)
+                val res = withContext(Dispatchers.IO) {
+                    try {
+                        val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            ?: return@withContext null
+                        client.extractDocument(bytes, name)
+                    } catch (e: Exception) { null }
+                }
+                if (res == null) { toast("Couldn't read $name"); continue }
+                if (res.has("error")) { toast("Couldn't read $name: ${res.optString("error")}"); continue }
+                val text = res.optString("text")
+                if (text.isBlank()) { toast("No readable text in $name"); continue }
+                attachments.add(name to text)
+            }
+            renderAttachments()
+        }
     }
+
+    private fun queryName(uri: Uri): String {
+        var name = "document"
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
+            }
+        } catch (_: Exception) { }
+        return name
+    }
+
+    private fun renderAttachments() {
+        if (attachments.isEmpty()) {
+            binding.attachmentRow.visibility = View.GONE
+        } else {
+            binding.attachmentRow.visibility = View.VISIBLE
+            binding.attachmentText.text = attachments.joinToString("  ") { "📎 ${it.first}" }
+        }
+    }
+
+    private fun toast(msg: String) = runOnUiThread {
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    // --- send / stream -----------------------------------------------------
 
     private fun send() {
-        val text = binding.input.text.toString().trim()
+        val typed = binding.input.text.toString().trim()
+        if (typed.isEmpty() && attachments.isEmpty()) return
         val model = selectedModel()
-        if (text.isEmpty()) return
-        if (model == null) { showConnectError("No model selected."); return }
-        prefs.lastModel = model
+        if (model == null) { toast("No model selected."); return }
+        if (currentId == null) newChat()
 
-        items.add(ChatItem("user", text))
+        val content = buildContent(typed, attachments)
+        items.add(ChatItem("user", content))
         val assistant = ChatItem("assistant", "")
         items.add(assistant)
         val assistantIndex = items.lastIndex
         adapter.notifyItemRangeInserted(assistantIndex - 1, 2)
         scrollToEnd()
         binding.input.setText("")
+        attachments.clear(); renderAttachments()
         setStreaming(true)
 
-        // Full message history for context.
         val history = items.dropLast(1).map { it.role to it.content }
+        saveCurrent() // persist the user turn immediately
 
         streamCall = client.streamChat(
             model = model,
@@ -210,6 +389,7 @@ class ChatActivity : AppCompatActivity() {
                     if (assistant.content.isEmpty()) assistant.content = "(no response)"
                     adapter.notifyItemChanged(assistantIndex)
                     setStreaming(false)
+                    saveCurrent(); loadSessions()
                 }
             },
             onError = { err ->
@@ -217,9 +397,16 @@ class ChatActivity : AppCompatActivity() {
                     assistant.content = if (assistant.content.isEmpty()) "⚠ $err" else assistant.content + "\n\n⚠ $err"
                     adapter.notifyItemChanged(assistantIndex)
                     setStreaming(false)
+                    saveCurrent()
                 }
             }
         )
+    }
+
+    private fun buildContent(text: String, files: List<Pair<String, String>>): String {
+        if (files.isEmpty()) return text
+        val blob = files.joinToString("\n\n") { "[file: ${it.first}]\n${it.second}" }
+        return "$text${ChatAdapter.ATTACH_DELIM}$blob"
     }
 
     private fun stopStreaming() {
@@ -235,7 +422,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun scrollToEnd() {
-        binding.messagesList.scrollToPosition(items.size - 1)
+        if (items.isNotEmpty()) binding.messagesList.scrollToPosition(items.size - 1)
     }
 
     // --- pooled-load progress ---------------------------------------------
@@ -269,7 +456,7 @@ class ChatActivity : AppCompatActivity() {
             val bytesTotal = if (loading.isNull("bytes_total")) 0L else loading.optLong("bytes_total")
             val bytesSent = if (loading.isNull("bytes_sent")) 0L else loading.optLong("bytes_sent")
 
-            binding.poolTitle.text = "Loading $model across ${nodeCount} device(s) — $stage"
+            binding.poolTitle.text = "Loading $model across $nodeCount device(s) — $stage"
             binding.poolProgress.isIndeterminate = pct == null
             if (pct != null) binding.poolProgress.progress = pct.toInt()
 

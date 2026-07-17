@@ -63,7 +63,15 @@ class ChatAdapter(private val items: MutableList<ChatItem>) :
     }
 
     private fun displayText(item: ChatItem): String {
-        if (item.role == "user") return item.content
+        if (item.role == "user") {
+            val idx = item.content.indexOf(ATTACH_DELIM)
+            if (idx == -1) return item.content
+            val text = item.content.substring(0, idx).trim()
+            val blob = item.content.substring(idx + ATTACH_DELIM.length)
+            val files = Regex("\\[file: (.+?)\\]").findAll(blob).map { it.groupValues[1] }.toList()
+            val chips = files.joinToString("  ") { "📎 $it" }
+            return if (text.isEmpty()) chips else "$chips\n$text"
+        }
         if (item.content.isEmpty()) return "…"
         // Drop reasoning blocks; show the final answer.
         val cleaned = item.content
@@ -75,4 +83,9 @@ class ChatAdapter(private val items: MutableList<ChatItem>) :
 
     private fun dp(ctx: android.content.Context, v: Int): Int =
         (v * ctx.resources.displayMetrics.density).toInt()
+
+    companion object {
+        // Must match the delimiter ChatActivity uses to append document context.
+        const val ATTACH_DELIM = "\n\n===LOCALY_ATTACHMENTS===\n"
+    }
 }

@@ -2,6 +2,7 @@ package com.localy.worker
 
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -46,6 +47,22 @@ class LocalyClient(
             if (!resp.isSuccessful) throw RuntimeException(errorMessage(resp.code, body))
             val data = JSONObject(body).optJSONArray("data") ?: JSONArray()
             return (0 until data.length()).mapNotNull { data.getJSONObject(it).optString("id").ifBlank { null } }
+        }
+    }
+
+    /** Upload a document; the server returns extracted text to use as context. */
+    fun extractDocument(bytes: ByteArray, filename: String): JSONObject {
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file", filename,
+                bytes.toRequestBody("application/octet-stream".toMediaType())
+            )
+            .build()
+        client.newCall(newRequest("/system/extract").post(body).build()).execute().use { resp ->
+            val s = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw RuntimeException(errorMessage(resp.code, s))
+            return JSONObject(s)
         }
     }
 
