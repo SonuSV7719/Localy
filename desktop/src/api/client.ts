@@ -10,15 +10,43 @@ export class APIError extends Error {
   }
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+/** Default per-request timeout (ms). Kept generous so a busy backend
+ * (e.g. loading a model) is not mistaken for a dead one. */
+const DEFAULT_TIMEOUT_MS = 12000;
+
+async function request<T>(
+  path: string,
+  options?: RequestInit & { timeoutMs?: number }
+): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
+
+  // Attach a timeout so a hung request cannot wedge the UI. If the caller
+  // passed their own signal, honour it too.
+  const controller = new AbortController();
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (options?.signal) {
+    options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+      },
+    });
+  } catch (e: any) {
+    if (e?.name === "AbortError") {
+      throw new APIError(0, `Request to ${path} timed out`, "timeout");
+    }
+    throw new APIError(0, e?.message || "Network error", "network");
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     let message = "An error occurred with the API server.";
@@ -66,7 +94,8 @@ export const apiClient = {
     req: ChatCompletionRequest,
     onChunk: (token: string) => void,
     onDone: () => void,
-    onError: (err: Error) => void
+    onError: (err: Error) => void,
+    signal?: AbortSignal
   ): Promise<void> {
     try {
       const response = await fetch(`${API_BASE_URL}/v1/chat/completions`, {
@@ -78,6 +107,7 @@ export const apiClient = {
           ...req,
           stream: true,
         }),
+        signal,
       });
 
       if (!response.ok) {
@@ -128,6 +158,12 @@ export const apiClient = {
 
       onDone();
     } catch (e: any) {
+      // A user-initiated abort (Stop button / unmount) is a graceful end,
+      // not an error — keep whatever tokens were already streamed.
+      if (e?.name === "AbortError") {
+        onDone();
+        return;
+      }
       onError(e);
     }
   },
