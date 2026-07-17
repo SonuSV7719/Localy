@@ -166,11 +166,32 @@ class ModelService:
                     "license": entry.license,
                     "context_length": entry.context_length,
                     "tags": entry.tags,
+                    "supports_vision": self._supports_vision(entry, variants_info),
                     "variants": variants_info,
                 }
             )
 
         return models_list
+
+    def _supports_vision(self, entry: Any, variants_info: list[dict[str, Any]]) -> bool:
+        """Whether a model can take images.
+
+        Definitive when downloaded: a companion mmproj GGUF sits next to the
+        weights. Otherwise advisory, from the model's name/family/tags — so the
+        UI can offer the image button for known vision families before download.
+        """
+        from pathlib import Path
+
+        from localy.inference.engine import find_mmproj
+
+        for v in variants_info:
+            path = v.get("local_path")
+            if path and find_mmproj(Path(path)) is not None:
+                return True
+
+        haystack = f"{entry.full_id} {entry.family} {' '.join(entry.tags)}".lower()
+        markers = ("vl", "vision", "llava", "minicpm-v", "moondream", "-vl-", "vl-", "multimodal")
+        return any(m in haystack for m in markers)
 
     async def get_active_model(self) -> LoadedModelInfo | None:
         """Get the active model info from the engine."""
