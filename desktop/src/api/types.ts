@@ -149,6 +149,7 @@ export interface PoolNode {
 export interface PoolLoadProgress {
   active: boolean;
   phase: string; // idle | starting | loading | ready | error | stopped
+  stage: string | null; // granular human label (e.g. "Loading tensors")
   ready: boolean;
   error: string | null;
   model: string | null;

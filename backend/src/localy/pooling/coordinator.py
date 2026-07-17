@@ -36,6 +36,29 @@ logger = get_logger(__name__)
 # Best-effort progress signals parsed from llama-server stdout/stderr.
 _PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
 
+# llama-server doesn't print a clean load percentage, but it does print
+# recognisable phase markers. We map each to a monotonic progress fraction and a
+# human-readable stage label so the UI shows a moving bar + meaningful status
+# even without a numeric percent. Checked in order; later matches win.
+_LOAD_MARKERS: list[tuple[str, float, str]] = [
+    ("load_model", 0.05, "Reading model file"),
+    ("loading model", 0.05, "Reading model file"),
+    ("llama_model_loader", 0.12, "Reading model metadata"),
+    ("loaded meta data", 0.15, "Reading model metadata"),
+    ("load_tensors", 0.25, "Loading tensors"),
+    ("loading model tensors", 0.25, "Loading tensors"),
+    ("model buffer size", 0.45, "Streaming layers to worker devices"),
+    ("rpc", 0.50, "Streaming layers to worker devices"),
+    ("kv cache", 0.85, "Allocating KV cache"),
+    ("kv_cache", 0.85, "Allocating KV cache"),
+    ("kv buffer", 0.85, "Allocating KV cache"),
+    ("warming up", 0.92, "Warming up"),
+    ("model loaded", 0.96, "Finalizing"),
+    ("server is listening", 0.98, "Finalizing"),
+]
+# Per-device allocation lines, e.g. "... model buffer size = 336.00 MiB".
+_BUFFER_RE = re.compile(r"buffer size\s*=\s*([\d.]+)\s*MiB", re.IGNORECASE)
+
 
 class Coordinator:
     """Supervises the llama-server subprocess that drives pooled inference."""
@@ -50,6 +73,7 @@ class Coordinator:
         # --- progress state (guarded by _lock) ---
         self._lock = threading.Lock()
         self._phase = "idle"          # idle | starting | loading | ready | error | stopped
+        self._stage = ""              # granular human label parsed from output
         self._ready = False
         self._error: str | None = None
         self._started_at = 0.0
@@ -143,6 +167,7 @@ class Coordinator:
         with self._lock:
             self._model_id = model_id
             self._phase = "starting"
+            self._stage = "Starting coordinator…"
             self._ready = False
             self._error = None
             self._started_at = time.time()
@@ -183,22 +208,29 @@ class Coordinator:
             self._last_log = line[:300]
             self._log_tail.append(line[:300])
 
-            # Percentage, if the loader prints one.
+            if self._phase == "starting":
+                self._phase = "loading"
+
+            # Advance the progress fraction monotonically from phase markers, so
+            # the bar only ever moves forward regardless of log ordering.
+            for marker, frac, label in _LOAD_MARKERS:
+                if marker in low:
+                    if self._progress_frac is None or frac > self._progress_frac:
+                        self._progress_frac = frac
+                    self._stage = label
+
+            # If the loader ever does print an explicit percentage, map it into
+            # the tensor-loading band (25%–90%) and take the max.
             m = _PCT_RE.search(line)
             if m:
                 try:
-                    frac = float(m.group(1)) / 100.0
-                    if 0.0 <= frac <= 1.0:
-                        self._progress_frac = frac
+                    p = float(m.group(1)) / 100.0
+                    if 0.0 <= p <= 1.0:
+                        mapped = 0.25 + p * (0.90 - 0.25)
+                        if self._progress_frac is None or mapped > self._progress_frac:
+                            self._progress_frac = mapped
                 except ValueError:
                     pass
-
-            # Coarse phase transitions from recognisable markers.
-            if self._phase in ("starting", "loading"):
-                if any(k in low for k in ("rpc", "connecting", "endpoint")):
-                    self._phase = "loading"
-                if any(k in low for k in ("load_tensors", "loading model", "llama_model_loader", "tensor")):
-                    self._phase = "loading"
 
     def _await_ready(self, timeout: float) -> None:
         """Poll llama-server /health until ready, the process dies, or timeout."""
@@ -215,6 +247,7 @@ class Coordinator:
                     with self._lock:
                         self._ready = True
                         self._phase = "ready"
+                        self._stage = "Ready"
                         self._ready_at = time.time()
                         self._progress_frac = 1.0
                     logger.info("coordinator_ready", model=self._model_id, url=self.proxy_url)
@@ -258,6 +291,7 @@ class Coordinator:
             return {
                 "active": active,
                 "phase": self._phase,
+                "stage": self._stage or None,
                 "ready": self._ready,
                 "error": self._error,
                 "model": self._model_id,
@@ -289,4 +323,5 @@ class Coordinator:
             self._ready = False
             self._error = None
             self._phase = "stopped"
+            self._stage = ""
             self._progress_frac = None
