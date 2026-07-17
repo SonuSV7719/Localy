@@ -54,6 +54,9 @@ class ChatActivity : AppCompatActivity() {
     private var discovered: List<ServerDiscovery.Server> = emptyList()
     private var models: List<String> = emptyList()
     private var streamCall: Call? = null
+    // Bumped whenever a stream is superseded (session switch / new chat / stop),
+    // so late callbacks from an old stream can't corrupt the current chat.
+    private var streamGen = 0
 
     private val ui = Handler(Looper.getMainLooper())
     private val poolPoll = object : Runnable {
@@ -120,8 +123,8 @@ class ChatActivity : AppCompatActivity() {
         super.onDestroy()
         discovery.stop()
         ui.removeCallbacks(poolPoll)
-        streamCall?.cancel()
-        saveCurrent()
+        cancelActiveStream()
+        saveCurrentBlocking()
     }
 
     // --- connect / discovery ----------------------------------------------
@@ -187,40 +190,49 @@ class ChatActivity : AppCompatActivity() {
         ui.post(poolPoll)
 
         loadSessions()
-        val first = db.conversations(false).firstOrNull()
-        if (first != null) openConversation(first) else newChat()
+        lifecycleScope.launch {
+            val first = withContext(Dispatchers.IO) { db.conversations(false).firstOrNull() }
+            if (first != null) openConversation(first) else newChat()
+        }
     }
 
+    // All DB access runs on Dispatchers.IO — SQLite on the UI thread ANRs on
+    // long conversations (saveMessages rewrites every row).
     private fun loadSessions() {
-        sessions.clear()
-        sessions.addAll(db.conversations(showingArchived))
-        sessionAdapter.activeId = currentId
-        sessionAdapter.notifyDataSetChanged()
-        binding.sessionsEmpty.visibility = if (sessions.isEmpty()) View.VISIBLE else View.GONE
-        binding.sessionsEmpty.text = if (showingArchived) "No archived chats." else "No chats yet."
+        lifecycleScope.launch {
+            val list = withContext(Dispatchers.IO) { db.conversations(showingArchived) }
+            sessions.clear(); sessions.addAll(list)
+            sessionAdapter.activeId = currentId
+            sessionAdapter.notifyDataSetChanged()
+            binding.sessionsEmpty.visibility = if (sessions.isEmpty()) View.VISIBLE else View.GONE
+            binding.sessionsEmpty.text = if (showingArchived) "No archived chats." else "No chats yet."
+        }
     }
 
     private fun newChat() {
+        cancelActiveStream()
         saveCurrent()
         val id = System.currentTimeMillis().toString() + "-" + (0..9999).random()
-        db.createConversation(id, "New chat", selectedModel().orEmpty(), System.currentTimeMillis())
+        val model = selectedModel().orEmpty()
         currentId = id
         items.clear()
         attachments.clear(); stagedImages.clear(); renderAttachments()
         adapter.notifyDataSetChanged()
+        setStreaming(false)
         showingArchived = false
-        loadSessions()
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { db.createConversation(id, "New chat", model, System.currentTimeMillis()) }
+            loadSessions()
+        }
         binding.drawer.closeDrawer(binding.sessionDrawer)
     }
 
     private fun openConversation(conv: Conversation) {
+        cancelActiveStream()
         if (conv.id != currentId) saveCurrent()
         currentId = conv.id
-        items.clear()
-        items.addAll(db.messages(conv.id))
+        setStreaming(false)
         attachments.clear(); stagedImages.clear(); renderAttachments()
-        adapter.notifyDataSetChanged()
-        scrollToEnd()
         if (conv.modelId.isNotBlank()) {
             val idx = models.indexOf(conv.modelId)
             if (idx >= 0) binding.modelSpinner.setSelection(idx)
@@ -228,13 +240,42 @@ class ChatActivity : AppCompatActivity() {
         sessionAdapter.activeId = currentId
         sessionAdapter.notifyDataSetChanged()
         binding.drawer.closeDrawer(binding.sessionDrawer)
+        lifecycleScope.launch {
+            val msgs = withContext(Dispatchers.IO) { db.messages(conv.id) }
+            items.clear(); items.addAll(msgs)
+            adapter.notifyDataSetChanged(); scrollToEnd()
+        }
     }
 
-    /** Persist the current conversation's messages + metadata to SQLite. */
+    /** Invalidate + cancel any in-flight stream so its callbacks can't write to
+     *  or corrupt a different conversation after a switch. */
+    private fun cancelActiveStream() {
+        if (streamCall != null) {
+            streamGen++
+            streamCall?.cancel()
+            streamCall = null
+        }
+    }
+
+    /** Persist the current conversation off the UI thread (snapshot + IO). */
     private fun saveCurrent() {
         val id = currentId ?: return
-        db.saveMessages(id, items)
-        db.updateMeta(id, deriveTitle(), selectedModel().orEmpty(), System.currentTimeMillis())
+        val snapshot = items.toList()
+        val title = deriveTitle()
+        val model = selectedModel().orEmpty()
+        val ts = System.currentTimeMillis()
+        lifecycleScope.launch(Dispatchers.IO) {
+            db.saveMessages(id, snapshot); db.updateMeta(id, title, model, ts)
+        }
+    }
+
+    /** Synchronous save for onDestroy, when the lifecycle scope is gone. */
+    private fun saveCurrentBlocking() {
+        val id = currentId ?: return
+        try {
+            db.saveMessages(id, items.toList())
+            db.updateMeta(id, deriveTitle(), selectedModel().orEmpty(), System.currentTimeMillis())
+        } catch (_: Exception) { /* closing */ }
     }
 
     private fun deriveTitle(): String {
@@ -416,6 +457,7 @@ class ChatActivity : AppCompatActivity() {
         binding.input.setText("")
         attachments.clear(); stagedImages.clear(); renderAttachments()
         setStreaming(true)
+        val gen = ++streamGen // this stream's generation; guards late callbacks
 
         val history = items.dropLast(1).map { it.role to it.content }
         saveCurrent() // persist the user turn immediately
@@ -426,6 +468,7 @@ class ChatActivity : AppCompatActivity() {
             imageUrls = imageUrls,
             onToken = { token ->
                 runOnUiThread {
+                    if (gen != streamGen) return@runOnUiThread // superseded (switched chat)
                     assistant.content += token
                     adapter.notifyItemChanged(assistantIndex)
                     scrollToEnd()
@@ -433,6 +476,7 @@ class ChatActivity : AppCompatActivity() {
             },
             onDone = {
                 runOnUiThread {
+                    if (gen != streamGen) return@runOnUiThread
                     if (assistant.content.isEmpty()) assistant.content = "(no response)"
                     adapter.notifyItemChanged(assistantIndex)
                     setStreaming(false)
@@ -441,6 +485,7 @@ class ChatActivity : AppCompatActivity() {
             },
             onError = { err ->
                 runOnUiThread {
+                    if (gen != streamGen) return@runOnUiThread
                     assistant.content = if (assistant.content.isEmpty()) "⚠ $err" else assistant.content + "\n\n⚠ $err"
                     adapter.notifyItemChanged(assistantIndex)
                     setStreaming(false)
@@ -461,9 +506,9 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun stopStreaming() {
-        streamCall?.cancel()
-        streamCall = null
+        cancelActiveStream()
         setStreaming(false)
+        saveCurrent() // keep whatever was streamed so far
     }
 
     private fun setStreaming(on: Boolean) {

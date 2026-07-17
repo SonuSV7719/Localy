@@ -41,8 +41,10 @@ export function saveListWithTrim<T>(key: string, list: T[]): { stored: T[]; trim
   let working = list;
   let trimmed = 0;
 
-  // At most a few iterations: each drops the oldest 20% of remaining items.
-  while (working.length > 0) {
+  // Trim oldest items until it fits, but never below the newest one — we don't
+  // want to wipe everything (and lose the user's current chat) just because a
+  // single large conversation exceeds quota.
+  while (working.length > 1) {
     const res = safeSetItem(key, JSON.stringify(working));
     if (res.ok) return { stored: working, trimmed };
     if (!res.quotaExceeded) return { stored: working, trimmed }; // non-quota error: give up quietly
@@ -51,11 +53,8 @@ export function saveListWithTrim<T>(key: string, list: T[]): { stored: T[]; trim
     trimmed += dropCount;
   }
 
-  // Even an empty list failed to write — clear the key to unwedge storage.
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    /* ignore */
-  }
-  return { stored: [], trimmed };
+  // Down to the single newest item. Try once more; if even that doesn't fit,
+  // DON'T clear the key — leave the last good value so nothing is silently lost.
+  const res = safeSetItem(key, JSON.stringify(working));
+  return { stored: working, trimmed: res.ok ? trimmed : trimmed };
 }

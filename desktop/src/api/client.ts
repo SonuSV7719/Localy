@@ -26,9 +26,11 @@ async function request<T>(
   // model across the pool, which can take minutes to stream weights to workers.
   const controller = new AbortController();
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let timedOut = false;
+  const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
   if (options?.signal) {
-    options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    if (options.signal.aborted) controller.abort();
+    else options.signal.addEventListener("abort", () => controller.abort(), { once: true });
   }
 
   let response: Response;
@@ -43,7 +45,8 @@ async function request<T>(
     });
   } catch (e: any) {
     if (e?.name === "AbortError") {
-      throw new APIError(0, `Request to ${path} timed out`, "timeout");
+      if (timedOut) throw new APIError(0, `Request to ${path} timed out`, "timeout");
+      throw new APIError(0, `Request to ${path} was cancelled`, "aborted");
     }
     throw new APIError(0, e?.message || "Network error", "network");
   } finally {

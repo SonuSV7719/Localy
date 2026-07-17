@@ -3,13 +3,17 @@ package com.localy.worker
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
-import android.os.Build
 import android.util.Log
+import java.util.ArrayDeque
 
 /**
  * Discovers Localy API servers on the LAN via mDNS (`_localy-api._tcp`, which
  * the desktop advertises). Reports each as a `http://host:port` base URL so the
- * chat screen can auto-fill the address — the user only needs to paste a key.
+ * chat screen can auto-fill the address — the user only pastes a key.
+ *
+ * Resolves are serialized: pre-Android-12 NsdManager allows only ONE in-flight
+ * resolveService; overlapping calls fail with FAILURE_ALREADY_ACTIVE and the
+ * device silently never appears. We queue and resolve one at a time.
  */
 class ServerDiscovery(context: Context) {
 
@@ -21,8 +25,13 @@ class ServerDiscovery(context: Context) {
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private val found = LinkedHashMap<String, Server>()
 
+    private val pending = ArrayDeque<NsdServiceInfo>()
+    private var resolving = false
+    private var onChange: ((List<Server>) -> Unit)? = null
+
     fun start(onChange: (List<Server>) -> Unit) {
         stop()
+        this.onChange = onChange
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -32,12 +41,13 @@ class ServerDiscovery(context: Context) {
             override fun onDiscoveryStopped(serviceType: String) {}
 
             override fun onServiceFound(info: NsdServiceInfo) {
-                resolve(info, onChange)
+                synchronized(pending) { pending.add(info) }
+                resolveNext()
             }
 
             override fun onServiceLost(info: NsdServiceInfo) {
                 found.remove(info.serviceName)
-                onChange(found.values.toList())
+                this@ServerDiscovery.onChange?.invoke(found.values.toList())
             }
         }
         discoveryListener = listener
@@ -48,23 +58,34 @@ class ServerDiscovery(context: Context) {
         }
     }
 
-    private fun resolve(info: NsdServiceInfo, onChange: (List<Server>) -> Unit) {
+    @Synchronized
+    private fun resolveNext() {
+        if (resolving) return
+        val info = synchronized(pending) { if (pending.isEmpty()) null else pending.removeFirst() } ?: return
+        resolving = true
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                 Log.w(TAG, "resolve failed: $errorCode")
+                resolving = false
+                resolveNext()
             }
             override fun onServiceResolved(resolved: NsdServiceInfo) {
                 @Suppress("DEPRECATION")
-                val host = resolved.host?.hostAddress ?: return
-                val server = Server(resolved.serviceName, host, resolved.port)
-                found[resolved.serviceName] = server
-                onChange(found.values.toList())
+                val host = resolved.host?.hostAddress
+                if (host != null) {
+                    found[resolved.serviceName] = Server(resolved.serviceName, host, resolved.port)
+                    onChange?.invoke(found.values.toList())
+                }
+                resolving = false
+                resolveNext()
             }
         }
         try {
             nsd.resolveService(info, resolveListener)
         } catch (e: Exception) {
             Log.w(TAG, "resolveService failed: ${e.message}")
+            resolving = false
+            resolveNext()
         }
     }
 
@@ -77,13 +98,15 @@ class ServerDiscovery(context: Context) {
             }
         }
         discoveryListener = null
+        onChange = null
+        resolving = false
+        synchronized(pending) { pending.clear() }
         found.clear()
     }
 
     companion object {
         private const val TAG = "LocalyServerDiscovery"
         // Must match backend MDNS_API_SERVICE_TYPE ("_localy-api._tcp.local.").
-        // Android's NsdManager expects the type without the trailing ".local."
         private const val SERVICE_TYPE = "_localy-api._tcp."
     }
 }

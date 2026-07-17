@@ -165,7 +165,20 @@ async def _proxy_to_pool(base_url: str, request: ChatCompletionRequest):
     if not request.stream:
         async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(url, json=payload)
-            return JSONResponse(status_code=resp.status_code, content=resp.json())
+            try:
+                return JSONResponse(status_code=resp.status_code, content=resp.json())
+            except Exception:
+                # Coordinator returned a non-JSON body (crashed / still starting).
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": {
+                            "message": f"Pooled server returned a non-JSON response (HTTP {resp.status_code}). "
+                            "It may still be loading or has stopped — check the Device Pool page.",
+                            "type": "server_error",
+                        }
+                    },
+                )
 
     async def sse_passthrough() -> AsyncGenerator[str, None]:
         try:
