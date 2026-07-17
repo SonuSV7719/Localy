@@ -3,4 +3,11 @@
     <style name="Theme.LocalyWorker" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:statusBarColor">#0B0B0F</item>
     </style>
+
+    <!-- Branded splash screen (androidx core-splashscreen; backported to API 24). -->
+    <style name="Theme.Localy.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#0B0B0F</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/localy_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.LocalyWorker</item>
+    </style>
 </resources>
