@@ -16,6 +16,26 @@ export interface ParsedContent {
 const OPEN = /<think(?:ing)?>/i;
 const CLOSE = /<\/think(?:ing)?>/i;
 
+// Attached document text is appended to a user message (so the model sees it as
+// context) after this delimiter. The chat bubble parses it back out to show
+// filename chips instead of the raw dumped text.
+export const ATTACH_DELIM = "\n\n===LOCALY_ATTACHMENTS===\n";
+
+export function buildUserContent(text: string, files: { name: string; text: string }[]): string {
+  if (files.length === 0) return text;
+  const blob = files.map((f) => `[file: ${f.name}]\n${f.text}`).join("\n\n");
+  return `${text}${ATTACH_DELIM}${blob}`;
+}
+
+export function parseUserContent(content: string): { text: string; files: string[] } {
+  const idx = content.indexOf(ATTACH_DELIM);
+  if (idx === -1) return { text: content, files: [] };
+  const text = content.slice(0, idx);
+  const blob = content.slice(idx + ATTACH_DELIM.length);
+  const files = Array.from(blob.matchAll(/\[file: (.+?)\]/g)).map((m) => m[1]);
+  return { text, files };
+}
+
 export function parseThinking(raw: string): ParsedContent {
   if (!raw || !OPEN.test(raw)) {
     return { thinking: "", answer: raw || "", thinkingInProgress: false };

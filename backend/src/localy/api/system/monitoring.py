@@ -6,8 +6,9 @@ Exposes endpoints for health checking, hardware probing, and benchmark runs.
 
 from __future__ import annotations
 
+import io
 from typing import Any
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from localy.core.config import get_settings
 from localy.core.dependencies import (
@@ -28,6 +29,44 @@ system_router = APIRouter(tags=["System & Monitoring"])
 async def health_check() -> dict[str, str]:
     """Basic service health check (liveness)."""
     return {"status": "ok"}
+
+
+# Cap extracted text so a huge document can't blow past the model's context.
+_MAX_EXTRACT_CHARS = 30000
+
+
+@system_router.post("/system/extract", dependencies=[Depends(verify_api_key)])
+async def extract_document(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Extract plain text from an uploaded document so it can be used as chat
+    context. Handles PDFs (via pypdf) and any UTF-8/Latin-1 text or code file.
+    Text is truncated to a safe length; the caller is told if it was cut."""
+    raw = await file.read()
+    name = (file.filename or "file").strip()
+    lower = name.lower()
+
+    text = ""
+    if lower.endswith(".pdf"):
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(raw))
+            pages = [(p.extract_text() or "") for p in reader.pages]
+            text = "\n\n".join(pages).strip()
+        except Exception as e:  # noqa: BLE001 - report, don't crash
+            return {"filename": name, "text": "", "chars": 0, "truncated": False, "error": f"Could not read PDF: {e}"}
+    else:
+        # Text / code / markdown / json / csv, etc. Decode leniently.
+        for enc in ("utf-8", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+
+    truncated = len(text) > _MAX_EXTRACT_CHARS
+    if truncated:
+        text = text[:_MAX_EXTRACT_CHARS]
+    return {"filename": name, "text": text, "chars": len(text), "truncated": truncated}
 
 
 @system_router.get("/ready", response_model=dict[str, Any])

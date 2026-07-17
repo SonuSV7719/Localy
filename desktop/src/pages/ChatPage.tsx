@@ -3,7 +3,7 @@ import { api } from "../api/endpoints";
 import { apiClient } from "../api/client";
 import { RegistryModel, ChatMessage, PoolStatus, ShardPlan } from "../api/types";
 import { saveListWithTrim } from "../lib/safeStorage";
-import { parseThinking } from "../lib/messageContent";
+import { parseThinking, parseUserContent, buildUserContent } from "../lib/messageContent";
 import { Markdown } from "../components/Markdown";
 import { ThinkingBlock } from "../components/ThinkingBlock";
 import { DeviceContribution } from "../components/DeviceContribution";
@@ -43,9 +43,14 @@ export const ChatPage: React.FC = () => {
   const [activePlan, setActivePlan] = useState<ShardPlan | null>(null);
   const plannedModelRef = useRef<string | null>(null);
 
+  // Document attachments staged for the next message (extracted to text).
+  const [attachments, setAttachments] = useState<{ name: string; text: string; truncated: boolean }[]>([]);
+  const [attaching, setAttaching] = useState<boolean>(false);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const quotaWarnedRef = useRef<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load models and conversations on mount
   useEffect(() => {
@@ -192,20 +197,56 @@ export const ChatPage: React.FC = () => {
     abortRef.current?.abort();
   };
 
+  // --- document attachments -------------------------------------------------
+
+  const onPickFiles = () => fileInputRef.current?.click();
+
+  const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ""; // allow re-picking the same file
+    if (files.length === 0) return;
+    setAttaching(true);
+    for (const f of files) {
+      try {
+        const res = await api.extractDocument(f);
+        if (res.error) {
+          alert(`Couldn't read ${f.name}: ${res.error}`);
+          continue;
+        }
+        if (!res.text.trim()) {
+          alert(`No readable text found in ${f.name}.`);
+          continue;
+        }
+        setAttachments((prev) => [...prev, { name: res.filename, text: res.text, truncated: res.truncated }]);
+      } catch (err: any) {
+        alert(`Couldn't attach ${f.name}: ${err.message}`);
+      }
+    }
+    setAttaching(false);
+  };
+
+  const removeAttachment = (idx: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   // Send message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || generating || !activeConvId || !selectedModel) return;
+    if ((!input.trim() && attachments.length === 0) || generating || !activeConvId || !selectedModel) return;
 
     const convId = activeConvId;
     const activeConv = getActiveConv();
     if (!activeConv) return;
 
-    const userMsg: ChatMessage = { role: "user", content: input };
+    // The message the model sees includes the extracted document text as
+    // context; the bubble displays just the typed text + filename chips.
+    const content = buildUserContent(input, attachments);
+    const userMsg: ChatMessage = { role: "user", content };
     const baseMessages = [...activeConv.messages, userMsg];
     const assistantIndex = baseMessages.length;
     const isFirst = activeConv.messages.length === 0;
-    const title = isFirst ? input.slice(0, 30) + (input.length > 30 ? "…" : "") : activeConv.title;
+    const titleSource = input.trim() || (attachments[0] ? attachments[0].name : "New chat");
+    const title = isFirst ? titleSource.slice(0, 30) + (titleSource.length > 30 ? "…" : "") : activeConv.title;
 
     setConversations((prev) => {
       const next = prev.map((c) =>
@@ -218,6 +259,7 @@ export const ChatPage: React.FC = () => {
     });
 
     setInput("");
+    setAttachments([]);
     setGenerating(true);
     setWaiting(true);
     setGeneratedTokens(0);
@@ -437,7 +479,21 @@ export const ChatPage: React.FC = () => {
                             {waiting ? "Thinking… (loading model on first run can take a moment)" : "Generating…"}
                           </span>
                         ) : isUser ? (
-                          <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+                          (() => {
+                            const parsed = parseUserContent(msg.content);
+                            return (
+                              <>
+                                {parsed.files.length > 0 && (
+                                  <div style={styles.attachChipRow}>
+                                    {parsed.files.map((f, i) => (
+                                      <span key={i} style={styles.attachChipSent}>📎 {f}</span>
+                                    ))}
+                                  </div>
+                                )}
+                                {parsed.text && <span style={{ whiteSpace: "pre-wrap" }}>{parsed.text}</span>}
+                              </>
+                            );
+                          })()
                         ) : (
                           <>
                             {parsed!.thinking && (
@@ -462,7 +518,37 @@ export const ChatPage: React.FC = () => {
 
         {/* Input Text Form */}
         <div style={styles.inputArea} className="glass-panel">
+          {/* Staged attachments */}
+          {(attachments.length > 0 || attaching) && (
+            <div style={styles.stagedRow}>
+              {attachments.map((a, i) => (
+                <span key={i} style={styles.stagedChip}>
+                  📎 {a.name}
+                  {a.truncated && <span style={styles.truncTag} title="Truncated to fit context"> (trimmed)</span>}
+                  <button type="button" style={styles.chipX} onClick={() => removeAttachment(i)}>×</button>
+                </span>
+              ))}
+              {attaching && <span style={styles.stagedChipMuted}>Extracting…</span>}
+            </div>
+          )}
           <form style={styles.inputForm} onSubmit={handleSendMessage}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".txt,.md,.markdown,.pdf,.json,.csv,.log,.py,.js,.ts,.tsx,.jsx,.java,.kt,.go,.rs,.c,.cpp,.h,.cs,.rb,.php,.sh,.yaml,.yml,.toml,.xml,.html,.css"
+              style={{ display: "none" }}
+              onChange={handleFilesSelected}
+            />
+            <button
+              type="button"
+              title="Attach a document (PDF, text, code) as context"
+              onClick={onPickFiles}
+              disabled={generating || !activeConvId || attaching}
+              style={styles.attachBtn}
+            >
+              📎
+            </button>
             <input
               type="text"
               value={input}
@@ -479,7 +565,7 @@ export const ChatPage: React.FC = () => {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={!input.trim() || !activeConvId}
+                disabled={(!input.trim() && attachments.length === 0) || !activeConvId}
                 style={styles.sendBtn}
               >
                 Send
@@ -622,6 +708,14 @@ const styles: { [key: string]: React.CSSProperties } = {
   thinking: { fontSize: "14px", color: "#a1a1aa", fontStyle: "italic" },
   messageText: { fontSize: "14px", color: "#f4f4f5", lineHeight: "1.6" },
   inputArea: { padding: "20px 24px", background: "rgba(10, 10, 15, 0.4)", borderTop: "1px solid var(--panel-border)" },
+  stagedRow: { display: "flex", flexWrap: "wrap", gap: "8px", maxWidth: "800px", margin: "0 auto 10px" },
+  stagedChip: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "#c7d2fe", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)", borderRadius: "6px", padding: "3px 8px" },
+  stagedChipMuted: { fontSize: "12px", color: "#a1a1aa", fontStyle: "italic", alignSelf: "center" },
+  truncTag: { color: "#fbbf24" },
+  chipX: { background: "transparent", border: "none", color: "#a5b4fc", cursor: "pointer", fontSize: "14px", lineHeight: 1, padding: "0 0 0 2px" },
+  attachChipRow: { display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" },
+  attachChipSent: { fontSize: "11px", color: "#e0e7ff", background: "rgba(255,255,255,0.12)", borderRadius: "5px", padding: "2px 7px" },
+  attachBtn: { padding: "0 14px", fontSize: "18px", background: "transparent", color: "#a1a1aa", border: "1px solid var(--panel-border)", borderRadius: "8px", cursor: "pointer" },
   inputForm: { display: "flex", gap: "12px", width: "100%", maxWidth: "800px", margin: "0 auto" },
   textInput: { flexGrow: 1, padding: "12px 16px", fontSize: "14px" },
   sendBtn: { padding: "0 24px", fontSize: "14px" },

@@ -1,5 +1,5 @@
 // API endpoint mappings
-import { apiClient } from "./client";
+import { apiClient, API_BASE_URL } from "./client";
 import {
   HardwareReport,
   FitAssessment,
@@ -47,6 +47,17 @@ export const api = {
    */
   async getModels(): Promise<RegistryModel[]> {
     return apiClient.get<RegistryModel[]>("/system/models");
+  },
+
+  /** Extract text from a document (PDF/text/code/md) to use as chat context. */
+  async extractDocument(
+    file: File
+  ): Promise<{ filename: string; text: string; chars: number; truncated: boolean; error?: string }> {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${API_BASE_URL}/system/extract`, { method: "POST", body: fd });
+    if (!res.ok) throw new Error(`Extraction failed (HTTP ${res.status})`);
+    return res.json();
   },
 
   /**
