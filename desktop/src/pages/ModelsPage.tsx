@@ -28,6 +28,8 @@ export const ModelsPage: React.FC = () => {
   const [hfResults, setHfResults] = useState<{ id: string; downloads: number; likes: number }[]>([]);
   const [hfBusy, setHfBusy] = useState<string>("");
   const [hfSearched, setHfSearched] = useState<boolean>(false);
+  const [showResults, setShowResults] = useState<boolean>(false);
+  const searchBoxRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     fetchCatalog();
@@ -36,6 +38,25 @@ export const ModelsPage: React.FC = () => {
     const timer = setInterval(pollDownloads, 1500);
     return () => clearInterval(timer);
   }, []);
+
+  // Close the search-results dropdown when clicking outside of it or pressing Esc.
+  useEffect(() => {
+    if (!showResults) return;
+    const onDown = (e: MouseEvent) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
+        setShowResults(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowResults(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showResults]);
 
   const pollDownloads = async () => {
     try {
@@ -74,7 +95,10 @@ export const ModelsPage: React.FC = () => {
   };
 
   const searchHF = async () => {
+    if (!hfQuery.trim()) return;
     setHfBusy("search");
+    setShowResults(true);
+    setHfSearched(false);
     try {
       setHfResults(await api.searchCatalog(hfQuery));
       setHfSearched(true);
@@ -233,36 +257,48 @@ export const ModelsPage: React.FC = () => {
         <p style={styles.headerSub}>
           Quantization variants are pulled live from Hugging Face. Search to add any GGUF model.
         </p>
-        <div style={styles.hfSearchRow}>
-          <input
-            style={styles.hfInput}
-            placeholder="Search Hugging Face for a model (e.g. qwen2.5, phi-4, gemma)…"
-            value={hfQuery}
-            onChange={(e) => setHfQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") searchHF(); }}
-          />
-          <button className="btn btn-primary" onClick={searchHF} disabled={hfBusy === "search"}>
-            {hfBusy === "search" ? "Searching…" : "🔍 Search HF"}
-          </button>
-        </div>
-        {hfResults.length > 0 && (
-          <div style={styles.hfResults}>
-            {hfResults.map((r) => (
-              <div key={r.id} style={styles.hfResult}>
-                <div style={styles.hfResultInfo}>
-                  <span style={styles.hfResultId}>{r.id}</span>
-                  <span style={styles.hfResultMeta}>▼ {r.downloads.toLocaleString()} · ♥ {r.likes.toLocaleString()}</span>
-                </div>
-                <button className="btn btn-secondary" style={styles.hfAddBtn} onClick={() => addHF(r.id)} disabled={hfBusy === r.id}>
-                  {hfBusy === r.id ? "Adding…" : "+ Add"}
-                </button>
-              </div>
-            ))}
+        <div ref={searchBoxRef} style={styles.hfSearchBox}>
+          <div style={styles.hfSearchRow}>
+            <input
+              style={styles.hfInput}
+              placeholder="Search Hugging Face for a model (e.g. qwen2.5, phi-4, gemma)…"
+              value={hfQuery}
+              onChange={(e) => setHfQuery(e.target.value)}
+              onFocus={() => { if (hfSearched || hfBusy === "search") setShowResults(true); }}
+              onKeyDown={(e) => { if (e.key === "Enter") searchHF(); }}
+            />
+            <button className="btn btn-primary" onClick={searchHF} disabled={hfBusy === "search"}>
+              {hfBusy === "search" ? "Searching…" : "🔍 Search HF"}
+            </button>
           </div>
-        )}
-        {hfSearched && hfResults.length === 0 && hfBusy !== "search" && (
-          <p style={styles.headerSub}>No GGUF models found for that search.</p>
-        )}
+
+          {showResults && (
+            <div style={styles.hfDropdown} className="glass-panel">
+              {hfBusy === "search" ? (
+                <div style={styles.hfLoadingRow}>
+                  <span className="spinner" style={styles.hfSpinner} />
+                  <span>Searching Hugging Face…</span>
+                </div>
+              ) : hfResults.length > 0 ? (
+                <div style={styles.hfResults}>
+                  {hfResults.map((r) => (
+                    <div key={r.id} style={styles.hfResult}>
+                      <div style={styles.hfResultInfo}>
+                        <span style={styles.hfResultId}>{r.id}</span>
+                        <span style={styles.hfResultMeta}>▼ {r.downloads.toLocaleString()} · ♥ {r.likes.toLocaleString()}</span>
+                      </div>
+                      <button className="btn btn-secondary" style={styles.hfAddBtn} onClick={() => addHF(r.id)} disabled={hfBusy === r.id}>
+                        {hfBusy === r.id ? "Adding…" : "+ Add"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : hfSearched ? (
+                <p style={styles.hfEmpty}>No GGUF models found for that search.</p>
+              ) : null}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Catalog Grid */}
@@ -412,9 +448,27 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: "14px",
     color: "#a1a1aa"
   },
+  hfSearchBox: { position: "relative" },
   hfSearchRow: { display: "flex", gap: "10px", marginTop: "14px", alignItems: "center" },
   hfInput: { flexGrow: 1, fontSize: "13px" },
-  hfResults: { marginTop: "12px", display: "flex", flexDirection: "column", gap: "6px", maxHeight: "220px", overflowY: "auto" },
+  hfDropdown: {
+    position: "absolute",
+    top: "calc(100% + 6px)",
+    left: 0,
+    right: 0,
+    zIndex: 50,
+    padding: "8px",
+    borderRadius: "10px",
+    border: "1px solid var(--panel-border)",
+    background: "rgba(18,18,26,0.98)",
+    boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
+    maxHeight: "320px",
+    overflowY: "auto",
+  },
+  hfLoadingRow: { display: "flex", alignItems: "center", gap: "10px", padding: "12px", fontSize: "13px", color: "#a1a1aa" },
+  hfSpinner: { width: "16px", height: "16px", flexShrink: 0 },
+  hfEmpty: { padding: "12px", fontSize: "13px", color: "#71717a", margin: 0 },
+  hfResults: { display: "flex", flexDirection: "column", gap: "6px" },
   hfResult: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px" },
   hfResultInfo: { display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 },
   hfResultId: { fontSize: "13px", color: "#e4e4e7", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
