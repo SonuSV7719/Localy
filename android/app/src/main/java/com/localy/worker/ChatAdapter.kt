@@ -68,7 +68,7 @@ class ChatAdapter(private val items: MutableList<ChatItem>) :
             if (idx == -1) return item.content
             val text = item.content.substring(0, idx).trim()
             val blob = item.content.substring(idx + ATTACH_DELIM.length)
-            val files = Regex("\\[file: (.+?)\\]").findAll(blob).map { it.groupValues[1] }.toList()
+            val files = Regex("\\[(?:file|image): (.+?)\\]").findAll(blob).map { it.groupValues[1] }.toList()
             val chips = files.joinToString("  ") { "📎 $it" }
             return if (text.isEmpty()) chips else "$chips\n$text"
         }

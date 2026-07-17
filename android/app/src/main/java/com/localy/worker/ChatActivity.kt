@@ -47,6 +47,9 @@ class ChatActivity : AppCompatActivity() {
 
     // Staged document attachments (name -> extracted text)
     private val attachments = mutableListOf<Pair<String, String>>()
+    // Staged images (name -> base64 data URL); usable only with vision models.
+    private val stagedImages = mutableListOf<Pair<String, String>>()
+    private var visionIds: Set<String> = emptySet()
 
     private var discovered: List<ServerDiscovery.Server> = emptyList()
     private var models: List<String> = emptyList()
@@ -63,6 +66,11 @@ class ChatActivity : AppCompatActivity() {
     private val pickFiles =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
             if (!uris.isNullOrEmpty()) extractFiles(uris)
+        }
+
+    private val pickImages =
+        registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+            if (!uris.isNullOrEmpty()) encodeImages(uris)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,12 +97,19 @@ class ChatActivity : AppCompatActivity() {
         binding.tabActive.setOnClickListener { showingArchived = false; loadSessions() }
         binding.tabArchived.setOnClickListener { showingArchived = true; loadSessions() }
         binding.attachButton.setOnClickListener { pickFiles.launch("*/*") }
-        binding.attachmentClear.setOnClickListener { attachments.clear(); renderAttachments() }
+        binding.imageButton.setOnClickListener { pickImages.launch("image/*") }
+        binding.attachmentClear.setOnClickListener {
+            attachments.clear(); stagedImages.clear(); renderAttachments()
+        }
 
         binding.serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 discovered.getOrNull(pos)?.let { binding.serverUrlInput.setText(it.baseUrl) }
             }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        binding.modelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { updateImageButton() }
             override fun onNothingSelected(p: AdapterView<*>?) {}
         }
 
@@ -191,7 +206,7 @@ class ChatActivity : AppCompatActivity() {
         db.createConversation(id, "New chat", selectedModel().orEmpty(), System.currentTimeMillis())
         currentId = id
         items.clear()
-        attachments.clear(); renderAttachments()
+        attachments.clear(); stagedImages.clear(); renderAttachments()
         adapter.notifyDataSetChanged()
         showingArchived = false
         loadSessions()
@@ -203,7 +218,7 @@ class ChatActivity : AppCompatActivity() {
         currentId = conv.id
         items.clear()
         items.addAll(db.messages(conv.id))
-        attachments.clear(); renderAttachments()
+        attachments.clear(); stagedImages.clear(); renderAttachments()
         adapter.notifyDataSetChanged()
         scrollToEnd()
         if (conv.modelId.isNotBlank()) {
@@ -286,23 +301,32 @@ class ChatActivity : AppCompatActivity() {
     // --- models ------------------------------------------------------------
 
     private fun populateModels() {
-        if (models.isEmpty()) {
-            lifecycleScope.launch {
+        lifecycleScope.launch {
+            if (models.isEmpty()) {
                 models = withContext(Dispatchers.IO) {
                     try { client.listModels() } catch (e: Exception) { emptyList() }
                 }
-                bindModelSpinner()
             }
-        } else bindModelSpinner()
+            visionIds = withContext(Dispatchers.IO) { client.visionModelIds() }
+            bindModelSpinner()
+        }
     }
 
     private fun bindModelSpinner() {
         val labels = models.ifEmpty { listOf("No models available") }
         binding.modelSpinner.adapter =
             ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        updateImageButton()
     }
 
     private fun selectedModel(): String? = models.getOrNull(binding.modelSpinner.selectedItemPosition)
+
+    /** Show the image button only when the selected model accepts images. */
+    private fun updateImageButton() {
+        val m = selectedModel()
+        binding.imageButton.visibility =
+            if (m != null && visionIds.contains(m)) View.VISIBLE else View.GONE
+    }
 
     // --- attachments -------------------------------------------------------
 
@@ -338,12 +362,33 @@ class ChatActivity : AppCompatActivity() {
         return name
     }
 
+    private fun encodeImages(uris: List<Uri>) {
+        lifecycleScope.launch {
+            for (uri in uris) {
+                val name = queryName(uri)
+                val dataUrl = withContext(Dispatchers.IO) {
+                    try {
+                        val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            ?: return@withContext null
+                        val mime = contentResolver.getType(uri) ?: "image/jpeg"
+                        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                        "data:$mime;base64,$b64"
+                    } catch (e: Exception) { null }
+                }
+                if (dataUrl == null) { toast("Couldn't read $name"); continue }
+                stagedImages.add(name to dataUrl)
+            }
+            renderAttachments()
+        }
+    }
+
     private fun renderAttachments() {
-        if (attachments.isEmpty()) {
+        val chips = attachments.map { "📎 ${it.first}" } + stagedImages.map { "🖼 ${it.first}" }
+        if (chips.isEmpty()) {
             binding.attachmentRow.visibility = View.GONE
         } else {
             binding.attachmentRow.visibility = View.VISIBLE
-            binding.attachmentText.text = attachments.joinToString("  ") { "📎 ${it.first}" }
+            binding.attachmentText.text = chips.joinToString("  ")
         }
     }
 
@@ -355,12 +400,13 @@ class ChatActivity : AppCompatActivity() {
 
     private fun send() {
         val typed = binding.input.text.toString().trim()
-        if (typed.isEmpty() && attachments.isEmpty()) return
+        if (typed.isEmpty() && attachments.isEmpty() && stagedImages.isEmpty()) return
         val model = selectedModel()
         if (model == null) { toast("No model selected."); return }
         if (currentId == null) newChat()
 
-        val content = buildContent(typed, attachments)
+        val content = buildContent(typed, attachments, stagedImages.map { it.first })
+        val imageUrls = stagedImages.map { it.second }
         items.add(ChatItem("user", content))
         val assistant = ChatItem("assistant", "")
         items.add(assistant)
@@ -368,7 +414,7 @@ class ChatActivity : AppCompatActivity() {
         adapter.notifyItemRangeInserted(assistantIndex - 1, 2)
         scrollToEnd()
         binding.input.setText("")
-        attachments.clear(); renderAttachments()
+        attachments.clear(); stagedImages.clear(); renderAttachments()
         setStreaming(true)
 
         val history = items.dropLast(1).map { it.role to it.content }
@@ -377,6 +423,7 @@ class ChatActivity : AppCompatActivity() {
         streamCall = client.streamChat(
             model = model,
             messages = history,
+            imageUrls = imageUrls,
             onToken = { token ->
                 runOnUiThread {
                     assistant.content += token
@@ -403,10 +450,14 @@ class ChatActivity : AppCompatActivity() {
         )
     }
 
-    private fun buildContent(text: String, files: List<Pair<String, String>>): String {
-        if (files.isEmpty()) return text
-        val blob = files.joinToString("\n\n") { "[file: ${it.first}]\n${it.second}" }
-        return "$text${ChatAdapter.ATTACH_DELIM}$blob"
+    private fun buildContent(
+        text: String,
+        files: List<Pair<String, String>>,
+        imageNames: List<String>,
+    ): String {
+        if (files.isEmpty() && imageNames.isEmpty()) return text
+        val parts = files.map { "[file: ${it.first}]\n${it.second}" } + imageNames.map { "[image: $it]" }
+        return "$text${ChatAdapter.ATTACH_DELIM}${parts.joinToString("\n\n")}"
     }
 
     private fun stopStreaming() {
