@@ -42,6 +42,7 @@ class HardwareService:
             parameter_count_billions=entry.parameter_count_billions,
             quantization=variant.quantization,
             target_context=context,
+            actual_size_bytes=getattr(variant, "file_size_bytes", None),
         )
 
         return {

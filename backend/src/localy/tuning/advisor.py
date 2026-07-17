@@ -61,6 +61,7 @@ def assess_model_fit(
     parameter_count_billions: float,
     quantization: QuantizationType | str = QuantizationType.Q4_K_M,
     target_context: int = 4096,
+    actual_size_bytes: int | None = None,
 ) -> FitAssessment:
     """Assess whether a model fits on the current hardware.
 
@@ -73,6 +74,11 @@ def assess_model_fit(
         parameter_count_billions: Model parameter count in billions (e.g., 7.0).
         quantization: Quantization type (e.g., Q4_K_M).
         target_context: Desired context length.
+        actual_size_bytes: The real on-disk GGUF size for this variant, when
+            known (e.g. from the Hugging Face file listing). When provided it is
+            used as the weight-memory term instead of the params×quant estimate,
+            which makes the assessment exact for the weights — including for
+            user-added models whose parameter count can't be parsed from the name.
 
     Returns:
         FitAssessment with fit level, explanation, and recommendations.
@@ -83,6 +89,7 @@ def assess_model_fit(
         params_b=parameter_count_billions,
         quant=str(quantization),
         target_ctx=target_context,
+        actual_size_bytes=actual_size_bytes,
     )
 
     # Normalize quantization type
@@ -94,15 +101,25 @@ def assess_model_fit(
     else:
         quant = quantization
 
-    # Step 1: Estimate model size in memory
     bits_per_weight = QUANT_BITS_PER_WEIGHT.get(quant, 4.9)
-    param_count = int(parameter_count_billions * 1e9)
-    model_size_bytes = int(param_count * bits_per_weight / 8)
 
-    # Step 2: Estimate KV cache size at target context
-    # Rough formula: KV cache ≈ 2 * n_layers * d_model * n_ctx * dtype_bytes
-    # For simplicity, use per-token estimate scaled by model size
-    kv_per_token_bytes = _estimate_kv_per_token(parameter_count_billions)
+    # Step 1: Weight memory. Prefer the REAL file size when we have it; fall back
+    # to the params×quant estimate only when it's unknown.
+    if actual_size_bytes and actual_size_bytes > 0:
+        model_size_bytes = int(actual_size_bytes)
+    else:
+        param_count = int(max(0.0, parameter_count_billions) * 1e9)
+        model_size_bytes = int(param_count * bits_per_weight / 8)
+
+    # Step 2: Estimate KV cache size at target context. KV scales with parameter
+    # count; if the count is unknown (0 — e.g. an added model with no size token
+    # in its name) but we know the real file size, back out an effective param
+    # count from size ÷ bits-per-weight so the KV estimate is still sensible.
+    effective_params_b = parameter_count_billions
+    if effective_params_b <= 0 and model_size_bytes > 0 and bits_per_weight > 0:
+        effective_params_b = (model_size_bytes * 8.0 / bits_per_weight) / 1e9
+
+    kv_per_token_bytes = _estimate_kv_per_token(effective_params_b)
     kv_cache_bytes = kv_per_token_bytes * target_context
 
     # Step 3: Total memory needed
@@ -111,6 +128,25 @@ def assess_model_fit(
     # Step 4: Compare against budget
     budget = report.memory.safe_model_budget_bytes
     headroom = budget - total_needed
+
+    # Robustness: if we could determine neither a real size nor a parameter
+    # count, we cannot honestly claim it fits. Return a cautionary assessment
+    # rather than a false green light.
+    if model_size_bytes <= 0:
+        return FitAssessment(
+            fit_level=FitLevel.FITS_TIGHT,
+            model_name=model_name,
+            model_size_bytes=0,
+            max_context=target_context,
+            memory_budget_bytes=budget,
+            memory_usage_bytes=0,
+            headroom_bytes=budget,
+            recommendations=["Model size couldn't be determined; fit will be re-checked after download."],
+            explanation=(
+                f"⚠️ Could not determine {model_name}'s size (no file size or parameter "
+                f"count available), so its fit can't be verified up front."
+            ),
+        )
 
     # Step 5: Determine fit level
     recommendations: list[str] = []
