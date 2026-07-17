@@ -21,10 +21,16 @@ const CLOSE = /<\/think(?:ing)?>/i;
 // filename chips instead of the raw dumped text.
 export const ATTACH_DELIM = "\n\n===LOCALY_ATTACHMENTS===\n";
 
-export function buildUserContent(text: string, files: { name: string; text: string }[]): string {
-  if (files.length === 0) return text;
-  const blob = files.map((f) => `[file: ${f.name}]\n${f.text}`).join("\n\n");
-  return `${text}${ATTACH_DELIM}${blob}`;
+export function buildUserContent(
+  text: string,
+  files: { name: string; text: string }[],
+  imageNames: string[] = []
+): string {
+  if (files.length === 0 && imageNames.length === 0) return text;
+  const parts: string[] = [];
+  files.forEach((f) => parts.push(`[file: ${f.name}]\n${f.text}`));
+  imageNames.forEach((n) => parts.push(`[image: ${n}]`));
+  return `${text}${ATTACH_DELIM}${parts.join("\n\n")}`;
 }
 
 export function parseUserContent(content: string): { text: string; files: string[] } {
@@ -32,7 +38,8 @@ export function parseUserContent(content: string): { text: string; files: string
   if (idx === -1) return { text: content, files: [] };
   const text = content.slice(0, idx);
   const blob = content.slice(idx + ATTACH_DELIM.length);
-  const files = Array.from(blob.matchAll(/\[file: (.+?)\]/g)).map((m) => m[1]);
+  // Show a chip for each attached file or image.
+  const files = Array.from(blob.matchAll(/\[(?:file|image): (.+?)\]/g)).map((m) => m[1]);
   return { text, files };
 }
 
