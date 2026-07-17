@@ -47,6 +47,9 @@ class MainActivity : AppCompatActivity() {
         binding.manageCacheButton.setOnClickListener {
             startActivity(Intent(this, CacheActivity::class.java))
         }
+        binding.openChatButton.setOnClickListener {
+            startActivity(Intent(this, ChatActivity::class.java))
+        }
         refreshUi()
     }
 

@@ -39,9 +39,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error("hardware_probe_failed_on_startup", error=str(e))
 
+    # 2. Advertise the API server over mDNS so LAN client apps (e.g. the Android
+    #    chat screen) can auto-discover this PC. Best-effort; never fatal.
+    advertiser = None
+    try:
+        from localy.pooling.discovery import ServerAdvertiser
+
+        advertiser = ServerAdvertiser(port=settings.port)
+        advertiser.start()
+    except Exception as e:
+        logger.warning("api_server_advertise_setup_failed", error=str(e))
+
     yield
 
-    # 2. Shutdown: Gracefully unload models
+    # 3. Shutdown: stop advertising, then gracefully unload models
+    if advertiser is not None:
+        try:
+            advertiser.stop()
+        except Exception as e:
+            logger.warning("api_server_advertise_stop_failed", error=str(e))
+
     logger.info("localy_server_shutting_down")
     try:
         engine = get_engine(settings)

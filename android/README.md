@@ -45,6 +45,27 @@ Or copy the APK to the phone and open it (allow "install from unknown sources").
 3. On the PC, open Localy → **Device Pool** → the phone appears automatically
    (or `localy pool discover`).
 
+## Chat from your phone
+
+The app also has a **Chat** screen so you can talk to a model running on your PC
+— including one pooled across this phone and other devices.
+
+1. Tap **💬 Chat with a pooled model** on the home screen.
+2. The app auto-discovers your PC on the WiFi (mDNS). Pick it from the list (or
+   type `http://<PC-IP>:11434`).
+3. Paste an **API key** — generate one on the PC in **Localy → API Access**
+   (LAN access is key-gated). The server + key are remembered for next time.
+4. Choose a model and chat. Responses stream live.
+
+While a model is loading across the pool, the Chat screen shows a **live
+progress panel** — percent, elapsed, ETA, data transferred to the worker
+devices, and the current status — polled from the PC's `/pool/status`. Once the
+model is serving, a banner confirms it's running across the pool.
+
+> The phone talks to the PC's OpenAI-compatible API over the LAN; it does not run
+> the model itself in this screen (that's the coordinator's job). Cleartext HTTP
+> to the LAN is enabled for this.
+
 ## Honest note
 A phone is a slow node — it lets a friend join in one tap, but the real speed
 win in a pool comes from actual computers. Zero-setup fixes the UX, not the

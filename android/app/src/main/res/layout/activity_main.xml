@@ -77,6 +77,16 @@
         android:textSize="12sp" />
 
     <Button
+        android:id="@+id/openChatButton"
+        android:layout_width="220dp"
+        android:layout_height="52dp"
+        android:layout_marginTop="20dp"
+        android:text="💬 Chat with a pooled model"
+        android:textSize="15sp"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#22C55E" />
+
+    <Button
         android:id="@+id/manageCacheButton"
         style="?android:attr/borderlessButtonStyle"
         android:layout_width="wrap_content"
