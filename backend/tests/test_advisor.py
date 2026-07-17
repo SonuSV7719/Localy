@@ -93,3 +93,70 @@ def test_advisor_fit_scenarios() -> None:
     )
     assert fit_70b.fit_level == FitLevel.DOES_NOT_FIT
     assert any("pooling" in r.lower() for r in fit_70b.recommendations)
+
+
+def _report_with_budget(budget_bytes: int) -> HardwareReport:
+    """Minimal HardwareReport with a given safe model budget, for fit tests."""
+    cpu = CPUTopology(
+        brand="Intel Core i5", architecture="x86_64", logical_cores=8,
+        physical_cores=8, p_cores=0, e_cores=0, is_hybrid=False,
+    )
+    gpu = GPUInfo(device_name="none", vram_total_mb=0, usable_for_inference=False, backend=GPUBackend.CPU_ONLY)
+    storage = StorageInfo(
+        path="C:/models", total_bytes=500 * 1024**3, free_bytes=200 * 1024**3,
+        used_bytes=300 * 1024**3, percent_used=60.0, read_speed_mbps=500.0,
+        is_ssd=True, mmap_recommended=True,
+    )
+    instruction_sets = InstructionSetReport(avx2=True, best_available_simd="AVX2")
+    memory = MemoryInfo(
+        total_bytes=16 * 1024**3, available_bytes=12 * 1024**3, used_bytes=4 * 1024**3,
+        percent_used=25.0, swap_total_bytes=0, swap_used_bytes=0,
+        os_overhead_bytes=3 * 1024**3, safe_model_budget_bytes=budget_bytes,
+    )
+    return HardwareReport(cpu=cpu, gpu=gpu, memory=memory, storage=storage, instruction_sets=instruction_sets)
+
+
+def test_actual_size_is_used_over_param_estimate() -> None:
+    """The real on-disk size, when provided, drives the weight term."""
+    report = _report_with_budget(10 * 1024**3)  # ~10 GB budget
+
+    # A repo whose name has no size token (params=0) but a real 20 GB file must
+    # be judged DOES_NOT_FIT — not a false green from a 0-byte estimate.
+    fit = assess_model_fit(
+        report=report,
+        model_name="mystery-model",
+        parameter_count_billions=0.0,
+        quantization="Q4_K_M",
+        target_context=4096,
+        actual_size_bytes=20 * 1024**3,
+    )
+    assert fit.fit_level == FitLevel.DOES_NOT_FIT
+    assert fit.model_size_bytes == 20 * 1024**3
+
+
+def test_actual_size_small_fits_even_without_params() -> None:
+    """params=0 + a small real size → fits well, with KV inferred from size."""
+    report = _report_with_budget(10 * 1024**3)
+    fit = assess_model_fit(
+        report=report,
+        model_name="small-unnamed",
+        parameter_count_billions=0.0,
+        quantization="Q4_K_M",
+        target_context=4096,
+        actual_size_bytes=2 * 1024**3,  # 2 GB
+    )
+    assert fit.fit_level == FitLevel.FITS_WELL
+
+
+def test_unknown_size_is_cautionary_not_green() -> None:
+    """No real size and no params must NOT yield a false 'fits well'."""
+    report = _report_with_budget(10 * 1024**3)
+    fit = assess_model_fit(
+        report=report,
+        model_name="totally-unknown",
+        parameter_count_billions=0.0,
+        quantization="Q4_K_M",
+        actual_size_bytes=None,
+    )
+    assert fit.fit_level != FitLevel.FITS_WELL
+    assert "could not determine" in fit.explanation.lower()

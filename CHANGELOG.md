@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Connection-resilience improvements for more reliable streaming and pooled sessions across flaky networks.
+- Model **fit assessment is now exact for weights**: it uses each variant's real Hugging Face file size instead of a parameter×quantization estimate. This fixes inaccurate badges for **search-and-added models** whose parameter count couldn't be parsed from the repo name (previously they could falsely show "fits well"). When neither a real size nor a parameter count is available, the badge is now cautionary rather than a false green. Covered by unit tests.
 - "Run pooled" now gives clear, staged feedback (elapsed time + status) instead of appearing to do nothing, and no longer aborts early: the client request timeout is disabled for the long model-load operation (previously it timed out after 12s while the backend kept loading). Errors are surfaced with actionable messages, and a success banner points users to the Chat tab.
 - Pooled model loading is now **non-blocking and tracked on the server**: the Device Pool page shows a live progress panel (percent, elapsed, ETA, data transferred to workers, worker count, latest log) that **survives tab switches and window close** — loading continues on the server and the panel resumes when you return. Chat only routes to the pool once the coordinator is actually ready.
 - The Localy server now advertises itself on the LAN over mDNS (`_localy-api._tcp`) so client apps can auto-discover it.

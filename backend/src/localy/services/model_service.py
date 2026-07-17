@@ -130,13 +130,16 @@ class ModelService:
                 is_downloaded = var.huggingface_file in local_files
                 local_file_info = local_files.get(var.huggingface_file)
 
-                # Assess hardware fit
+                # Assess hardware fit. Pass the REAL on-disk size so the weight
+                # term is exact (and correct even for added models whose param
+                # count can't be parsed from the repo name).
                 fit = assess_model_fit(
                     report=probe_report,
                     model_name=entry.display_name,
                     parameter_count_billions=entry.parameter_count_billions,
                     quantization=quant,
                     target_context=self._settings.default_context_length,
+                    actual_size_bytes=var.file_size_bytes,
                 )
 
                 variants_info.append(
