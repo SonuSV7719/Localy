@@ -135,24 +135,27 @@ export const api = {
     return apiClient.post<{ removed: boolean }>("/pool/leave", { node_id: nodeId });
   },
 
-  /** Pool-fit advisor: does this model fit across the current pool? */
+  /** Pool-fit advisor: does this model fit across the current pool?
+   *  May fetch model metadata from HF, so allow more than the default timeout. */
   async poolFit(modelId: string): Promise<ShardPlan> {
-    return apiClient.get<ShardPlan>(`/pool/fit/${encodeURIComponent(modelId)}`);
+    return apiClient.get<ShardPlan>(`/pool/fit/${encodeURIComponent(modelId)}`, { timeoutMs: 60000 });
   },
 
-  /** Load a model split across the pool (spawns the coordinator). */
+  /** Load a model split across the pool (spawns the coordinator).
+   *  This can take minutes (streaming weights to remote workers over WiFi), so
+   *  the client timeout is disabled — the backend enforces its own 900s cap. */
   async loadPooled(model: string, ctx: number = 4096): Promise<ShardPlan> {
-    return apiClient.post<ShardPlan>("/pool/load", { model, ctx });
+    return apiClient.post<ShardPlan>("/pool/load", { model, ctx }, { timeoutMs: 0 });
   },
 
   /** Stop pooled inference. */
   async unloadPooled(): Promise<{ status: string }> {
-    return apiClient.post<{ status: string }>("/pool/unload", {});
+    return apiClient.post<{ status: string }>("/pool/unload", {}, { timeoutMs: 30000 });
   },
 
   /** Share THIS device as a worker (start rpc-server + advertise). */
   async startWorker(): Promise<{ running: boolean; address?: string }> {
-    return apiClient.post<{ running: boolean; address?: string }>("/pool/worker/start", {});
+    return apiClient.post<{ running: boolean; address?: string }>("/pool/worker/start", {}, { timeoutMs: 60000 });
   },
 
   /** Stop sharing this device. */
