@@ -28,6 +28,9 @@ class DownloadManager:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._manager = ModelManager(settings, ModelStore(settings))
+        from localy.inference.hf_catalog import HFCatalog
+
+        self._hf = HFCatalog(settings.cache_path)
         self._state: dict[str, dict[str, Any]] = {}  # model_id -> progress state
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel: dict[str, bool] = {}
@@ -58,12 +61,12 @@ class DownloadManager:
         }
         self._state[model_id] = st
         self._tasks[model_id] = asyncio.create_task(
-            self._run(model_id, variant.resolved_download_url, dest, variant.sha256 or None)
+            self._run(model_id, variant.resolved_download_url, dest, variant.sha256 or None, variant.huggingface_repo)
         )
         logger.info("download_started_bg", model=model_id)
         return st
 
-    async def _run(self, model_id: str, url: str, dest, sha256: str | None) -> None:
+    async def _run(self, model_id: str, url: str, dest, sha256: str | None, repo: str = "") -> None:
         def cb(done: int, total: int, speed: float) -> None:
             s = self._state.get(model_id)
             if s:
@@ -80,6 +83,10 @@ class DownloadManager:
                 progress_callback=cb,
                 cancel_check=lambda: self._cancel.get(model_id, False),
             )
+            # For vision repos, also fetch the companion mmproj projector so the
+            # model can actually take images. Best-effort — a failure here does
+            # not fail the model download (it just falls back to text-only).
+            await self._maybe_download_mmproj(model_id, repo, cb)
             self._state[model_id]["status"] = "done"
             self._state[model_id]["speed_mbps"] = 0.0
             logger.info("download_done_bg", model=model_id)
@@ -93,6 +100,36 @@ class DownloadManager:
         finally:
             self._tasks.pop(model_id, None)
             self._cancel.pop(model_id, None)
+
+    async def _maybe_download_mmproj(self, model_id: str, repo: str, cb) -> None:
+        """Download the vision projector for a repo, if it has one and it's not
+        already present. Runs in a thread (HF API is blocking) and is non-fatal."""
+        if not repo:
+            return
+        try:
+            mm = await asyncio.to_thread(self._hf.find_mmproj_file, repo)
+        except Exception:  # noqa: BLE001
+            mm = None
+        if not mm:
+            return
+        dest = self._settings.models_path / mm["file"]
+        if dest.exists():
+            return
+        st = self._state.get(model_id)
+        if st:
+            st["label"] = f"{st.get('label', '')} — vision projector".strip(" —")
+            st["completed"] = 0
+            st["total"] = mm.get("size", 0)
+        url = f"https://huggingface.co/{repo}/resolve/main/{mm['file']}"
+        try:
+            await download_file(
+                url, dest, expected_sha256=None,
+                progress_callback=cb,
+                cancel_check=lambda: self._cancel.get(model_id, False),
+            )
+            logger.info("mmproj_downloaded", model=model_id, file=mm["file"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mmproj_download_failed", model=model_id, error=repr(e))
 
     def cancel(self, model_id: str) -> dict[str, Any]:
         """Request cancellation. The .part is kept so it can be resumed later."""
