@@ -66,6 +66,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error("failed_to_unload_model_on_shutdown", error=str(e))
 
+    # Terminate spawned child processes so they aren't orphaned (they'd hold the
+    # install folder open and block upgrades). Best-effort each.
+    try:
+        from localy.services.pool_service import get_pool_service
+
+        pool = get_pool_service(settings)
+        pool.unload_pooled()   # stops the pooled llama-server coordinator
+        pool.stop_worker()     # stops the local rpc-server worker
+    except Exception as e:
+        logger.warning("pool_shutdown_cleanup_failed", error=str(e))
+    try:
+        from localy.network.tunnel import get_tunnel_manager
+
+        get_tunnel_manager(settings).stop()  # stops cloudflared
+    except Exception as e:
+        logger.warning("tunnel_shutdown_cleanup_failed", error=str(e))
+
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application instance."""

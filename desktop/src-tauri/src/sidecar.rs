@@ -76,6 +76,20 @@ pub fn handle_app_exit(app_handle: &AppHandle, event: &RunEvent) {
         if let Some(state) = app_handle.try_state::<SidecarState>() {
             if let Ok(mut lock) = state.child.lock() {
                 if let Some(mut child) = lock.take() {
+                    // Kill the WHOLE process tree, not just the backend. The
+                    // backend spawns children (pooled llama-server coordinator,
+                    // cloudflared tunnel, rpc worker) that would otherwise be
+                    // orphaned — left holding install-folder files (blocking the
+                    // next install) and ports. On Windows, child.kill() only
+                    // terminates the single process, so use taskkill /T.
+                    #[cfg(windows)]
+                    {
+                        let pid = child.id();
+                        let mut kill = Command::new("taskkill");
+                        kill.args(["/F", "/T", "/PID", &pid.to_string()]);
+                        kill.creation_flags(CREATE_NO_WINDOW);
+                        let _ = kill.status();
+                    }
                     let _ = child.kill();
                 }
             }
