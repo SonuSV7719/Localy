@@ -54,6 +54,14 @@ def find_mmproj(model_path: Path) -> Path | None:
     return None
 
 
+def looks_like_vision_model(model_id: str) -> bool:
+    """Heuristic: does this model id/name indicate a vision model? Used to avoid
+    mis-detecting a stray mmproj in the shared models dir as belonging to a
+    text-only model."""
+    name = model_id.lower()
+    return any(k in name for k in ("vl", "vision", "llava", "minicpm-v", "moondream", "multimodal", "nanollava"))
+
+
 def build_vision_chat_handler(model_id: str, mmproj_path: Path) -> Any | None:
     """Construct the right llama-cpp-python vision chat handler for a model.
 
@@ -170,7 +178,7 @@ class InferenceEngine:
                 # Detect a vision projector; if present, load with the matching
                 # multimodal chat handler so images are supported. Falls back to
                 # a plain text load if anything about vision setup fails.
-                mmproj = find_mmproj(model_path)
+                mmproj = find_mmproj(model_path) if looks_like_vision_model(model_id) else None
                 vision_handler = build_vision_chat_handler(model_id, mmproj) if mmproj else None
                 self._is_vision = vision_handler is not None
                 if self._is_vision:

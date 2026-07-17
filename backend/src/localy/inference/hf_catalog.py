@@ -94,6 +94,25 @@ class HFCatalog:
             logger.warning("hf_fetch_variants_failed", repo=repo_id, error=str(e))
             return entry["variants"] if entry else []  # stale cache or empty
 
+    def find_mmproj_file(self, repo_id: str) -> dict[str, Any] | None:
+        """Return the vision projector (mmproj) file in a repo, if any.
+
+        Vision GGUF repos ship a companion `*mmproj*.gguf` that must be present
+        for llama.cpp to enable images. Returns {file, size} or None.
+        """
+        try:
+            from huggingface_hub import HfApi
+
+            info = HfApi().model_info(repo_id, files_metadata=True)
+            for s in info.siblings or []:
+                name = s.rfilename
+                low = name.lower()
+                if low.endswith(".gguf") and ("mmproj" in low or "mproj" in low):
+                    return {"file": name, "size": int(s.size or 0)}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("hf_find_mmproj_failed", repo=repo_id, error=str(e))
+        return None
+
     # --- search ---
     def search_gguf_models(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Search Hugging Face for GGUF models, most-downloaded first."""
