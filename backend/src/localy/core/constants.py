@@ -158,8 +158,17 @@ MDNS_SERVICE_TYPE = "_localy._tcp.local."
 # The Localy API server advertises itself under a distinct type so client apps
 # (e.g. the Android chat screen) can auto-discover the PC on the LAN.
 MDNS_API_SERVICE_TYPE = "_localy-api._tcp.local."
+# How often the coordinator actively probes each joined worker's rpc port to
+# confirm it's still alive and refresh its heartbeat.
 POOL_HEALTH_CHECK_INTERVAL_SECONDS = 10
-POOL_STALE_THRESHOLD_SECONDS = 30
+# A worker is pruned from the live pool only after this long without a
+# successful heartbeat. Must be comfortably larger than the heartbeat interval
+# (a couple of missed probes) so a reachable worker is never dropped between
+# probes — the old 30s value with no heartbeat meant every worker was pruned
+# ~30s after joining.
+POOL_STALE_THRESHOLD_SECONDS = 45
+# TCP-connect timeout for a single liveness probe.
+POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS = 2.0
 
 # Default ports for the RPC-based pooling stack.
 DEFAULT_RPC_PORT = 50052  # llama.cpp rpc-server worker port

@@ -10,9 +10,15 @@ for a model that doesn't fit locally and has remote workers available.
 
 from __future__ import annotations
 
+import socket
+import threading
 import time
 
 from localy.core.config import Settings
+from localy.core.constants import (
+    POOL_HEALTH_CHECK_INTERVAL_SECONDS,
+    POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS,
+)
 from localy.core.exceptions import ModelNotFoundError, PoolingError
 from localy.core.logging import get_logger
 from localy.inference.model_manager import ModelManager
@@ -37,7 +43,26 @@ class PoolService:
         self._discovery: WorkerDiscovery | None = None
         self._worker: WorkerProcess | None = None
         self._advertiser: WorkerAdvertiser | None = None
+
+        # Roster of workers the user has *intentionally* joined (manually or via
+        # auto-join). This is the source of truth the heartbeat probes — a member
+        # that briefly drops off (phone screen-off, WiFi power-save) stays in the
+        # roster and is automatically re-added to the live pool the moment it's
+        # reachable again, instead of being lost forever after one stale prune.
+        self._members: dict[str, PoolNode] = {}
+        self._members_lock = threading.Lock()
+        self._discovery_lock = threading.Lock()
+
         self._init_local_node()
+
+        # Active liveness heartbeat: keeps reachable workers from being pruned
+        # and auto-rejoins ones that come back. Started here so it runs for the
+        # whole process lifetime (the service is a singleton).
+        self._hb_stop = threading.Event()
+        self._heartbeat = threading.Thread(
+            target=self._heartbeat_loop, name="pool-heartbeat", daemon=True
+        )
+        self._heartbeat.start()
 
     # --- worker role (share THIS device to others' pools) ---
     @property
@@ -122,18 +147,90 @@ class PoolService:
             compute_score=compute_score,
         )
         self._state.upsert(node)
+        # Remember it as a member so the heartbeat keeps it alive / auto-rejoins.
+        with self._members_lock:
+            self._members[node_id] = node
         logger.info("pool_node_joined", address=node.address, budget_gb=round(node.budget_gb, 2))
         return node
 
     def leave(self, node_id: str) -> bool:
+        # Drop from the roster first so the heartbeat won't re-add it.
+        with self._members_lock:
+            self._members.pop(node_id, None)
         return self._state.remove(node_id)
 
+    # --- liveness heartbeat ---
+    @staticmethod
+    def _probe(host: str, port: int, timeout: float) -> bool:
+        """True if a TCP connection to host:port succeeds (worker is alive)."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                return s.connect_ex((host, port)) == 0
+        except OSError:
+            return False
+
+    def _heartbeat_loop(self) -> None:
+        """Periodically probe every roster member and refresh live membership.
+
+        Reachable members are (re-)added to the live pool and their heartbeat
+        refreshed, so an active worker is never pruned. Unreachable members are
+        left alone: they age out of the *live* view via ``prune_stale`` but stay
+        in the roster, so they auto-rejoin as soon as they respond again.
+        """
+        # Start the mDNS browser here (off the event-loop thread) so a worker
+        # that re-announces after dropping is caught promptly. Best-effort:
+        # pooling works by IP + heartbeat even if zeroconf is unavailable.
+        try:
+            self._ensure_discovery()
+        except Exception as e:
+            logger.warning("discovery_autostart_failed", error=str(e))
+
+        while not self._hb_stop.wait(POOL_HEALTH_CHECK_INTERVAL_SECONDS):
+            with self._members_lock:
+                members = list(self._members.items())
+            for node_id, node in members:
+                try:
+                    if self._probe(node.host, node.port, POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS):
+                        # upsert adds it back if it had aged out, or just touches it.
+                        self._state.upsert(node)
+                except Exception:  # pragma: no cover - probe must never crash the loop
+                    pass
+
+    def shutdown(self) -> None:
+        """Stop background threads (heartbeat + discovery). Best-effort."""
+        self._hb_stop.set()
+        if self._discovery is not None:
+            try:
+                self._discovery.stop()
+            except Exception:
+                pass
+            self._discovery = None
+
     # --- discovery (mDNS) ---
+    def _on_discovery_change(self) -> None:
+        """mDNS saw a worker (re)appear. If it's a known member, re-add it to
+        the live pool immediately — a faster complement to the TCP heartbeat."""
+        disc = self._discovery
+        if disc is None:
+            return
+        try:
+            for w in disc.list_workers():
+                node_id = f"{w.host}:{w.port}"
+                with self._members_lock:
+                    member = self._members.get(node_id)
+                if member is not None:
+                    self._state.upsert(member)
+        except Exception:  # pragma: no cover - callback must never raise into zeroconf
+            pass
+
     def _ensure_discovery(self) -> WorkerDiscovery:
-        if self._discovery is None:
-            self._discovery = WorkerDiscovery()
-            self._discovery.start()
-        return self._discovery
+        with self._discovery_lock:
+            if self._discovery is None:
+                disc = WorkerDiscovery(on_change=self._on_discovery_change)
+                disc.start()
+                self._discovery = disc
+            return self._discovery
 
     def discover(self, auto_join: bool = False, wait_seconds: float = 2.5) -> list[dict]:
         """List workers advertised on the LAN via mDNS. Optionally auto-join them.

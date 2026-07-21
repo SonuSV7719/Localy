@@ -172,11 +172,14 @@ export interface PoolLoadProgress {
   model: string | null;
   elapsed_s: number;
   eta_s: number | null;
+  eta_is_estimate?: boolean;
   percent: number | null; // coarse phase estimate (NOT a byte counter)
   percent_is_estimate?: boolean;
   idle_s?: number; // seconds since the loader last logged (stall hint)
   bytes_total: number | null;
-  bytes_sent: number | null;
+  bytes_sent: number | null; // estimated from the phase fraction
+  bytes_is_estimate?: boolean;
+  speed_bps?: number | null; // estimated transfer speed (bytes/sec)
   node_count: number;
   remote_count: number;
   last_log: string | null;

@@ -420,17 +420,25 @@ export const PoolPage: React.FC = () => {
                 </div>
 
                 <div style={styles.statGrid}>
-                  <div style={styles.stat}><span style={styles.statLabel}>Stage {pct != null ? "(est.)" : ""}</span>{pct != null ? `~${pct.toFixed(0)}%` : "working…"}</div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Transferred {pct != null ? "(est.)" : ""}</span>
+                    {load?.bytes_total ? `${fmtBytes(load?.bytes_sent)} / ${fmtBytes(load.bytes_total)}` : (pct != null ? `~${pct.toFixed(0)}%` : "working…")}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Remaining</span>
+                    {load?.bytes_total ? fmtBytes(Math.max(0, (load.bytes_total || 0) - (load?.bytes_sent || 0))) : "—"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Speed {load?.speed_bps ? "(est.)" : ""}</span>
+                    {load?.speed_bps ? `${fmtBytes(load.speed_bps)}/s` : "measuring…"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Time left (est.)</span>{fmtDuration(load?.eta_s)}</div>
                   <div style={styles.stat}><span style={styles.statLabel}>Elapsed</span>{fmtDuration(load?.elapsed_s)}</div>
-                  <div style={styles.stat}><span style={styles.statLabel}>To transfer</span>{load?.bytes_total ? fmtBytes(load.bytes_total) : "—"}</div>
                   <div style={styles.stat}><span style={styles.statLabel}>Worker devices</span>{load?.remote_count ?? status?.remote_count ?? 0}</div>
                 </div>
 
                 {load?.bytes_total ? (
                   <div style={styles.loadingSub}>
-                    ~{fmtBytes(load.bytes_total)} of weights stream to {load?.remote_count || 1} worker device(s). The
-                    percentage is a rough stage estimate — llama.cpp doesn't report exact transfer progress, so there's
-                    no reliable ETA.
+                    ~{fmtBytes(load.bytes_total)} of weights stream to {load?.remote_count || 1} worker device(s) over
+                    the network. Transferred/speed/ETA are estimates derived from the loader's stage — llama.cpp
+                    doesn't expose byte-exact RPC progress — so they refine as the load proceeds.
                   </div>
                 ) : null}
                 {(load?.idle_s ?? 0) > 20 && (

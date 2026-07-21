@@ -59,6 +59,15 @@ _LOAD_MARKERS: list[tuple[str, float, str]] = [
 # Per-device allocation lines, e.g. "... model buffer size = 336.00 MiB".
 _BUFFER_RE = re.compile(r"buffer size\s*=\s*([\d.]+)\s*MiB", re.IGNORECASE)
 
+# The phase-fraction band during which weights actually stream to workers:
+# tensor loading (~0.25) through "model loaded" (~0.96). We map the coarse
+# phase fraction onto 0..1 inside this band to derive an *estimated* bytes-sent
+# / speed / ETA readout. llama.cpp doesn't emit a byte-exact RPC counter, so
+# these are clearly labelled estimates — but they give the user the live
+# "X of Y transferred, ~N MB/s, ~T left" feedback they expect during a load.
+_TRANSFER_BAND_START = 0.25
+_TRANSFER_BAND_END = 0.96
+
 
 class Coordinator:
     """Supervises the llama-server subprocess that drives pooled inference."""
@@ -80,6 +89,7 @@ class Coordinator:
         self._ready_at = 0.0
         self._last_log_at = 0.0       # wall time of the last log line (stall detection)
         self._progress_frac: float | None = None  # 0..1 if parseable from output
+        self._transfer_started_at = 0.0  # when weight-streaming began (for speed/ETA)
         self._bytes_total = 0         # approx bytes to stream to remote workers
         self._node_count = 0
         self._remote_count = 0
@@ -177,6 +187,7 @@ class Coordinator:
             self._started_at = time.time()
             self._ready_at = 0.0
             self._progress_frac = None
+            self._transfer_started_at = 0.0
             self._bytes_total = bytes_total
             self._node_count = len(plan.nodes)
             self._remote_count = len(endpoints)
@@ -299,10 +310,38 @@ class Coordinator:
             idle = 0.0
             if active and self._last_log_at:
                 idle = max(0.0, time.time() - self._last_log_at)
-            # NOTE: percent is a coarse *phase* estimate parsed from log markers,
-            # not a byte counter. We deliberately do NOT fabricate an ETA or a
-            # bytes-transferred figure from it (that was misleading) — llama.cpp
-            # doesn't expose real transfer progress over RPC.
+
+            # --- estimated transfer readout (bytes sent / speed / ETA) ---------
+            # percent is a coarse *phase* estimate parsed from log markers, not a
+            # byte counter, so everything derived from it is an estimate too.
+            # We map the phase fraction onto the weight-streaming band to get a
+            # transfer fraction, then derive bytes-sent, a cumulative transfer
+            # speed, and an ETA. All flagged with *_is_estimate so the UI can be
+            # honest ("~") rather than implying exact byte accounting.
+            bytes_sent: int | None = None
+            eta_s: float | None = None
+            speed_bps: float | None = None
+            if frac is not None and self._bytes_total > 0:
+                span = _TRANSFER_BAND_END - _TRANSFER_BAND_START
+                transfer_frac = (frac - _TRANSFER_BAND_START) / span
+                transfer_frac = max(0.0, min(1.0, transfer_frac))
+                if self._ready:
+                    transfer_frac = 1.0
+                bytes_sent = int(self._bytes_total * transfer_frac)
+
+                # Mark when streaming began so speed reflects the transfer, not
+                # the earlier metadata-reading phase.
+                if transfer_frac > 0.0 and self._transfer_started_at == 0.0:
+                    self._transfer_started_at = time.time()
+                if self._transfer_started_at:
+                    end = self._ready_at if self._ready_at else time.time()
+                    t_elapsed = max(0.0, end - self._transfer_started_at)
+                    if t_elapsed > 1.0 and bytes_sent > 0:
+                        speed_bps = bytes_sent / t_elapsed
+                        remaining = max(0, self._bytes_total - bytes_sent)
+                        if speed_bps > 0 and not self._ready:
+                            eta_s = remaining / speed_bps
+
             return {
                 "active": active,
                 "phase": self._phase,
@@ -311,12 +350,15 @@ class Coordinator:
                 "error": self._error,
                 "model": self._model_id,
                 "elapsed_s": round(elapsed, 1),
-                "eta_s": None,
+                "eta_s": round(eta_s, 1) if eta_s is not None else None,
+                "eta_is_estimate": True,
                 "percent": round(frac * 100, 1) if frac is not None else None,
                 "percent_is_estimate": True,
                 "idle_s": round(idle, 1),
                 "bytes_total": self._bytes_total or None,
-                "bytes_sent": None,
+                "bytes_sent": bytes_sent,
+                "bytes_is_estimate": True,
+                "speed_bps": round(speed_bps, 1) if speed_bps is not None else None,
                 "node_count": self._node_count,
                 "remote_count": self._remote_count,
                 "last_log": self._last_log or None,
@@ -343,3 +385,4 @@ class Coordinator:
             self._phase = "stopped"
             self._stage = ""
             self._progress_frac = None
+            self._transfer_started_at = 0.0
