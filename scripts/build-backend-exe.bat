@@ -28,12 +28,18 @@ echo [1/2] Running PyInstaller (bundling llama_cpp native libs)...
   --collect-all zeroconf ^
   --collect-all ifaddr ^
   --collect-submodules uvicorn ^
+  --collect-all pypdf ^
+  --collect-all multipart ^
+  --collect-all python_multipart ^
+  --collect-all huggingface_hub ^
   --hidden-import uvicorn.logging ^
   --hidden-import uvicorn.loops.auto ^
   --hidden-import uvicorn.protocols.http.auto ^
   --hidden-import uvicorn.protocols.websockets.auto ^
   --hidden-import uvicorn.lifespan.on ^
   --hidden-import cpufeature ^
+  --hidden-import multipart ^
+  --hidden-import python_multipart ^
   "%ENTRY%" || ( echo [ERROR] PyInstaller failed & exit /b 1 )
 
 echo [2/2] Copying bundle into the Tauri sidecar location...

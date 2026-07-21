@@ -55,6 +55,10 @@ export const ChatPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const quotaWarnedRef = useRef<boolean>(false);
+  // Which model has actually produced output this session — so the "first-run
+  // load can take a moment" hint only shows before a model is loaded, not on
+  // every message (the model stays resident in the engine between messages).
+  const loadedModelRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -332,6 +336,8 @@ export const ChatPage: React.FC = () => {
       { model: selectedModel, messages: apiMessages, temperature: 0.7 },
       (token) => {
         setWaiting(false);
+        // First token proves this model is now loaded and resident.
+        loadedModelRef.current = selectedModel;
         acc += token;
         tokenCount++;
         setGeneratedTokens(tokenCount);
@@ -525,7 +531,12 @@ export const ChatPage: React.FC = () => {
                       <div style={styles.messageText}>
                         {isStreaming && !msg.content ? (
                           <span style={styles.thinking} className="pulse-indicator">
-                            {waiting ? "Thinking… (loading model on first run can take a moment)" : "Generating…"}
+                            {waiting
+                              ? (loadedModelRef.current === activeConv.modelId ||
+                                 (pool?.pooled_active && pool?.active_model === activeConv.modelId)
+                                  ? "Thinking…"
+                                  : "Loading model (first run can take a moment)…")
+                              : "Generating…"}
                           </span>
                         ) : isUser ? (
                           (() => {

@@ -157,7 +157,11 @@ class _PoolListener(ServiceListener):  # type: ignore[misc]
             (k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v)
             for k, v in (info.properties or {}).items()
         }
-        node_id = props.get("node_id", f"{ip}:{info.port}")
+        # Always identify a worker by its real reachable address, not the TXT
+        # node_id (the Android worker advertises "label:port", which doesn't
+        # match how joins/heartbeats key nodes). Keeps identity stable so a
+        # worker that re-announces is recognised as the same node, not a dup.
+        node_id = f"{ip}:{info.port}"
         try:
             compute = float(props.get("compute", "1") or 1)
         except ValueError:

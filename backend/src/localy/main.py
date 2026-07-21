@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pool = get_pool_service(settings)
         pool.unload_pooled()   # stops the pooled llama-server coordinator
         pool.stop_worker()     # stops the local rpc-server worker
+        pool.shutdown()        # stops the heartbeat + discovery threads
     except Exception as e:
         logger.warning("pool_shutdown_cleanup_failed", error=str(e))
     try:

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -33,6 +34,12 @@ class WorkerService : Service() {
     private lateinit var rpc: RpcWorker
     private lateinit var advertiser: NsdAdvertiser
     private var wakeLock: PowerManager.WakeLock? = null
+    // Keep the WiFi radio in high-perf mode (don't power-manage the RPC socket)
+    // and keep multicast reception alive (so mDNS/NSD keeps answering) even when
+    // the screen is off / Doze kicks in. Without these the desktop coordinator
+    // loses the worker a minute or two after the screen sleeps.
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -76,6 +83,7 @@ class WorkerService : Service() {
         )
 
         acquireWakeLock()
+        acquireWifiLocks()
         running = true
         statusText = "Contributing ~%.1f GB · discoverable on WiFi".format(offeredGb)
         updateNotification(statusText)
@@ -85,6 +93,7 @@ class WorkerService : Service() {
         advertiser.unregister()
         rpc.stop()
         releaseWakeLock()
+        releaseWifiLocks()
         running = false
         statusText = "Stopped"
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -109,6 +118,33 @@ class WorkerService : Service() {
     private fun releaseWakeLock() {
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLocks() {
+        val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        // High-perf lock keeps the WiFi radio from dozing the RPC TCP socket.
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        else
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        wifiLock = wifi.createWifiLock(mode, "Localy:wifi").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        // Multicast lock keeps mDNS/NSD announcements flowing so the desktop
+        // coordinator keeps seeing this worker while the screen is off.
+        multicastLock = wifi.createMulticastLock("Localy:mdns").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWifiLocks() {
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
     }
 
     private fun createChannel() {
