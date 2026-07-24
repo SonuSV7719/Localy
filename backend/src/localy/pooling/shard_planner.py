@@ -31,6 +31,7 @@ class PoolNode:
     is_local: bool = False  # True for the coordinator's own machine
     label: str = ""
     compute_score: float = 1.0  # relative inference speed (threads x SIMD, or tok/s)
+    metrics_port: int | None = None  # optional worker telemetry HTTP port
 
     @property
     def address(self) -> str:

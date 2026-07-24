@@ -3,13 +3,14 @@ import { SetupPage } from "./pages/SetupPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { PoolPage } from "./pages/PoolPage";
+import { OperationsPage } from "./pages/OperationsPage";
 import { ApiAccessPage } from "./pages/ApiAccessPage";
 import { SettingsPage, syncBackgroundSetting } from "./pages/SettingsPage";
 import { api } from "./api/endpoints";
 
 function App() {
   const [setupCompleted, setSetupCompleted] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"chat" | "models" | "pool" | "api" | "settings">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "models" | "pool" | "operations" | "api" | "settings">("chat");
   const [isServerHealthy, setIsServerHealthy] = useState<boolean>(false);
   const [hardwareSummary, setHardwareSummary] = useState<string>("Detecting...");
 
@@ -157,6 +158,10 @@ function App() {
             <span style={styles.menuIcon}>🔗</span> Device Pool
           </div>
 
+          <div onClick={() => setActiveTab("operations")} style={{ ...styles.menuItem, background: activeTab === "operations" ? "rgba(99, 102, 241, 0.1)" : "transparent", color: activeTab === "operations" ? "#fff" : "var(--text-secondary)" }}>
+            <span style={styles.menuIcon}>&#128202;</span> Pool Operations
+          </div>
+
           <div
             onClick={() => setActiveTab("api")}
             style={{
@@ -204,6 +209,7 @@ function App() {
         {activeTab === "chat" && <ChatPage />}
         {activeTab === "models" && <ModelsPage />}
         {activeTab === "pool" && <PoolPage />}
+        {activeTab === "operations" && <OperationsPage />}
         {activeTab === "api" && <ApiAccessPage />}
         {activeTab === "settings" && <SettingsPage />}
       </div>

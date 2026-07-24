@@ -13,6 +13,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from collections import deque
 
 from localy.core.config import Settings
 from localy.core.constants import (
@@ -43,6 +44,7 @@ class PoolService:
         self._discovery: WorkerDiscovery | None = None
         self._worker: WorkerProcess | None = None
         self._advertiser: WorkerAdvertiser | None = None
+        self._events: deque[dict] = deque(maxlen=250)
 
         # Roster of workers the user has *intentionally* joined (manually or via
         # auto-join). This is the source of truth the heartbeat probes — a member
@@ -54,6 +56,7 @@ class PoolService:
         self._discovery_lock = threading.Lock()
 
         self._init_local_node()
+        self._event("pool_initialized", "Coordinator is ready")
 
         # Active liveness heartbeat: keeps reachable workers from being pruned
         # and auto-rejoins ones that come back. Started here so it runs for the
@@ -65,6 +68,8 @@ class PoolService:
         self._heartbeat.start()
 
     # --- worker role (share THIS device to others' pools) ---
+    def _event(self, kind: str, message: str, **details: object) -> None:
+        self._events.appendleft({"at": time.time(), "kind": kind, "message": message, "details": details})
     @property
     def worker_running(self) -> bool:
         return self._worker is not None and self._worker.is_running
@@ -87,6 +92,7 @@ class PoolService:
         except Exception as e:  # discovery is best-effort; worker still usable by IP
             logger.warning("advertise_failed", error=str(e))
         logger.info("worker_shared", address=self._worker.address)
+        self._event("local_worker_started", "This device started sharing", address=self._worker.address)
         return {"running": True, "address": self._worker.address}
 
     def stop_worker(self) -> dict:
@@ -104,6 +110,7 @@ class PoolService:
             except Exception as e:
                 logger.warning("worker_stop_failed", error=str(e))
             self._worker = None
+        self._event("local_worker_stopped", "This device stopped sharing")
         return {"running": False}
 
     def _init_local_node(self) -> None:
@@ -129,6 +136,7 @@ class PoolService:
         label: str = "",
         budget_bytes: int | None = None,
         compute_score: float = 1.0,
+        metrics_port: int | None = None,
     ) -> PoolNode:
         """Manually add a remote worker to the pool (Stage 1)."""
         node_id = f"{host}:{port}"
@@ -145,19 +153,24 @@ class PoolService:
             budget_bytes=budget_bytes,
             label=label or node_id,
             compute_score=compute_score,
+            metrics_port=metrics_port,
         )
         self._state.upsert(node)
         # Remember it as a member so the heartbeat keeps it alive / auto-rejoins.
         with self._members_lock:
             self._members[node_id] = node
         logger.info("pool_node_joined", address=node.address, budget_gb=round(node.budget_gb, 2))
+        self._event("worker_joined", f"{node.label} joined the pool", address=node.address, budget_gb=round(node.budget_gb, 2))
         return node
 
     def leave(self, node_id: str) -> bool:
         # Drop from the roster first so the heartbeat won't re-add it.
         with self._members_lock:
             self._members.pop(node_id, None)
-        return self._state.remove(node_id)
+        removed = self._state.remove(node_id)
+        if removed:
+            self._event("worker_left", f"{node_id} left the pool")
+        return removed
 
     # --- liveness heartbeat ---
     @staticmethod
@@ -260,6 +273,7 @@ class PoolService:
                     label=w.label,
                     budget_bytes=w.budget_bytes or None,
                     compute_score=w.compute_score,
+                    metrics_port=w.metrics_port,
                 )
             results.append(
                 {
@@ -268,6 +282,8 @@ class PoolService:
                     "port": w.port,
                     "label": w.label,
                     "budget_gb": round(w.budget_bytes / (1024**3), 2) if w.budget_bytes else None,
+                    "metrics_available": w.metrics_port is not None,
+                    "metrics_port": w.metrics_port,
                 }
             )
         return results
@@ -305,11 +321,30 @@ class PoolService:
             raise PoolingError(f"Model does not fit across the pool. {plan.reason}")
 
         model_path = self._manager.get_local_model_path(model_id)
+        self._event("model_load_started", f"Coordinating {model_id}", model=model_id, devices=len(plan.nodes))
         self._coordinator.start(model_id, model_path, plan, n_ctx=n_ctx)
         return plan
 
     def unload_pooled(self) -> None:
+        self._event("model_unloaded", "Pooled model stopped", model=self._coordinator.model_id)
         self._coordinator.stop()
+
+    def operations(self) -> dict:
+        """Live topology plus a bounded coordination timeline for the UI."""
+        status = self.status()
+        model = status["active_model"]
+        plan = None
+        if model:
+            try:
+                plan = self.plan_for_model(model)
+            except Exception:
+                pass
+        shares = {n.node_id: n.layer_share_pct for n in plan.nodes} if plan else {}
+        for node in status["nodes"]:
+            node["planned_layer_share_pct"] = round(shares.get(node["node_id"], 0.0), 1)
+            node["planned_model_bytes"] = int((plan.model_size_bytes if plan else 0) * shares.get(node["node_id"], 0.0) / 100)
+            node["memory_measurement"] = "planned_budget"
+        return {"status": status, "events": list(self._events), "model_size_bytes": plan.model_size_bytes if plan else None}
 
     # --- status ---
     @property

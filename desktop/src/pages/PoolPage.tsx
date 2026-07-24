@@ -28,7 +28,7 @@ export const PoolPage: React.FC = () => {
   useEffect(() => {
     refreshStatus();
     loadModels();
-    const t = setInterval(refreshStatus, loadingActive ? 1500 : 4000);
+    const t = setInterval(refreshStatus, loadingActive ? 800 : 4000);
     return () => clearInterval(t);
   }, [loadingActive]);
 
@@ -126,7 +126,7 @@ export const PoolPage: React.FC = () => {
     setError("");
     try {
       for (const w of discovered) {
-        await api.joinPool(w.host, w.port, w.label, w.budget_gb);
+        await api.joinPool(w.host, w.port, w.label, w.budget_gb, w.metrics_port);
       }
       await refreshStatus();
     } catch (e: any) {
@@ -136,10 +136,10 @@ export const PoolPage: React.FC = () => {
     }
   };
 
-  const join = async (host: string, port: number, label = "", budgetGb?: number | null) => {
+  const join = async (host: string, port: number, label = "", budgetGb?: number | null, metricsPort?: number | null) => {
     setError("");
     try {
-      await api.joinPool(host, port, label, budgetGb);
+      await api.joinPool(host, port, label, budgetGb, metricsPort);
       refreshStatus();
     } catch (e: any) {
       setError(e.message);
@@ -397,6 +397,13 @@ export const PoolPage: React.FC = () => {
           {loadingActive && (() => {
             const load = status?.loading;
             const pct = load?.percent ?? null;
+            const observed = load?.transfer_measurement === "observed_network";
+            const plannedRemaining = observed && load?.bytes_total != null && load.bytes_sent != null
+              ? Math.max(0, load.bytes_total - load.bytes_sent)
+              : null;
+            const transferPct = observed && load?.bytes_total && load.bytes_sent != null
+              ? Math.min(100, (load.bytes_sent / load.bytes_total) * 100)
+              : null;
             return (
               <div style={styles.loadingBanner}>
                 <div style={styles.loadingHeaderRow}>
@@ -412,14 +419,28 @@ export const PoolPage: React.FC = () => {
                   <div
                     style={{
                       ...styles.progressFill,
-                      width: pct != null ? `${pct}%` : "100%",
-                      opacity: pct != null ? 1 : 0.35,
+                      width: transferPct != null ? `${transferPct}%` : "100%",
+                      opacity: transferPct != null ? 1 : 0.35,
                     }}
-                    className={pct == null ? "pulse-indicator" : undefined}
+                    className={transferPct == null ? "pulse-indicator" : undefined}
                   />
                 </div>
 
                 <div style={styles.statGrid}>
+                  <div style={styles.stat}><span style={styles.statLabel}>Received by workers</span>
+                    {observed ? fmtBytes(load?.bytes_sent) : "Waiting for telemetry"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Planned weight transfer</span>
+                    {load?.bytes_total ? fmtBytes(load.bytes_total) : "--"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Remaining (planned)</span>
+                    {plannedRemaining != null ? fmtBytes(plannedRemaining) : "Not measurable yet"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Measured speed</span>
+                    {observed ? (load?.speed_bps ? `${fmtBytes(load.speed_bps)}/s` : "Measuring...") : "Unavailable"}
+                  </div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Time left (estimate)</span>{observed ? fmtDuration(load?.eta_s) : "Waiting for transfer"}</div>
+                  <div style={{ display: "none" }}>
                   <div style={styles.stat}><span style={styles.statLabel}>Transferred {pct != null ? "(est.)" : ""}</span>
                     {load?.bytes_total ? `${fmtBytes(load?.bytes_sent)} / ${fmtBytes(load.bytes_total)}` : (pct != null ? `~${pct.toFixed(0)}%` : "working…")}
                   </div>
@@ -432,16 +453,29 @@ export const PoolPage: React.FC = () => {
                   <div style={styles.stat}><span style={styles.statLabel}>Time left (est.)</span>{fmtDuration(load?.eta_s)}</div>
                   <div style={styles.stat}><span style={styles.statLabel}>Elapsed</span>{fmtDuration(load?.elapsed_s)}</div>
                   <div style={styles.stat}><span style={styles.statLabel}>Worker devices</span>{load?.remote_count ?? status?.remote_count ?? 0}</div>
+                  </div>
                 </div>
 
                 {load?.bytes_total ? (
+                  <>
                   <div style={styles.loadingSub}>
+                    {observed
+                      ? `Live worker network traffic is being measured. ${fmtBytes(load.bytes_total)} is the planned weight allocation; protocol overhead and a warm worker cache can make it differ from received bytes.`
+                      : "This worker has not provided transfer telemetry yet. The loader phase is shown above, but no transferred bytes or ETA are invented from it."}
+                  </div>
+                  <div style={{ ...styles.loadingSub, display: "none" }}>
                     ~{fmtBytes(load.bytes_total)} of weights stream to {load?.remote_count || 1} worker device(s) over
                     the network. Transferred/speed/ETA are estimates derived from the loader's stage — llama.cpp
                     doesn't expose byte-exact RPC progress — so they refine as the load proceeds.
                   </div>
+                  </>
                 ) : null}
-                {(load?.idle_s ?? 0) > 20 && (
+                {observed && (load?.transfer_idle_s ?? 0) > 12 && (
+                  <div style={styles.stallNote}>
+                    No worker data received for {fmtDuration(load?.transfer_idle_s)}. Check WiFi strength and keep the worker app open.
+                  </div>
+                )}
+                {false && (load?.idle_s ?? 0) > 20 && (
                   <div style={styles.stallNote}>
                     ⏳ Still working — no update from the loader in {fmtDuration(load?.idle_s)}. Streaming weights to a
                     slow worker (e.g. a phone/tablet over WiFi) can take several minutes with no output.

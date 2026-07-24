@@ -38,6 +38,7 @@ class DiscoveredWorker:
     label: str
     budget_bytes: int
     compute_score: float = 1.0
+    metrics_port: int | None = None
 
 
 def _local_ip() -> str:
@@ -166,6 +167,10 @@ class _PoolListener(ServiceListener):  # type: ignore[misc]
             compute = float(props.get("compute", "1") or 1)
         except ValueError:
             compute = 1.0
+        try:
+            metrics_port = int(props["metrics_port"]) if props.get("metrics_port") else None
+        except ValueError:
+            metrics_port = None
         self.workers[name] = DiscoveredWorker(
             node_id=node_id,
             host=ip,
@@ -173,6 +178,7 @@ class _PoolListener(ServiceListener):  # type: ignore[misc]
             label=props.get("label", node_id),
             budget_bytes=int(props.get("budget", "0") or 0),
             compute_score=compute,
+            metrics_port=metrics_port,
         )
         self._on_change()
 

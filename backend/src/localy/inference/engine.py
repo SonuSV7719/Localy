@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
@@ -151,7 +152,6 @@ class InferenceEngine:
     def _estimate_params_from_path(self, path: Path) -> float:
         """Estimate model parameters from filename as fallback."""
         name = path.name.lower()
-        import re
         match = re.search(r"(\d+(\.\d+)?)[bb]", name)
         if match:
             return float(match.group(1))

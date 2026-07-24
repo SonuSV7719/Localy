@@ -29,9 +29,11 @@ class PoolLoadProgress(BaseModel):
     percent_is_estimate: bool = True
     idle_s: float = 0.0           # seconds since the loader last logged (stall hint)
     bytes_total: int | None = None
-    bytes_sent: int | None = None  # estimated from the phase fraction
+    bytes_sent: int | None = None  # observed network bytes when telemetry is available
     bytes_is_estimate: bool = True
-    speed_bps: float | None = None  # estimated transfer speed (bytes/sec)
+    speed_bps: float | None = None  # measured from observed network bytes/sec
+    transfer_measurement: str = "not_available"  # observed_network | not_available
+    transfer_idle_s: float | None = None
     node_count: int = 0
     remote_count: int = 0
     last_log: str | None = None
@@ -76,6 +78,9 @@ class JoinRequest(BaseModel):
     label: str = Field("", description="Friendly label for the device.")
     budget_mib: int | None = Field(
         None, description="Memory the worker offers, in MiB (optional)."
+    )
+    metrics_port: int | None = Field(
+        None, ge=1, le=65535, description="Optional worker telemetry HTTP port."
     )
 
 

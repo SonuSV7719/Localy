@@ -18,6 +18,16 @@ class LocalyClient(
     @Volatile var baseUrl: String,
     @Volatile var apiKey: String,
 ) {
+    data class StreamMetrics(
+        val phase: String,
+        val elapsedSeconds: Double,
+        val generatedTokens: Int,
+        val requestedMaxTokens: Int,
+        val remainingTokens: Int,
+        val tokensPerSecond: Double,
+        val etaSeconds: Double?,
+        val timeToFirstTokenMs: Double?,
+    )
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -104,6 +114,7 @@ class LocalyClient(
         messages: List<Pair<String, String>>,
         imageUrls: List<String> = emptyList(),
         onToken: (String) -> Unit,
+        onMetrics: (StreamMetrics) -> Unit = {},
         onDone: () -> Unit,
         onError: (String) -> Unit,
     ): Call {
@@ -152,8 +163,28 @@ class LocalyClient(
                         val payloadStr = trimmed.removePrefix("data:").trim()
                         if (payloadStr == "[DONE]") { onDone(); return@Thread }
                         try {
-                            val deltaObj = JSONObject(payloadStr)
-                                .optJSONArray("choices")?.optJSONObject(0)
+                            val event = JSONObject(payloadStr)
+                            val metrics = event.optJSONObject("localy")
+                            if (metrics?.optString("type") == "stream_metrics") {
+                                onMetrics(
+                                    StreamMetrics(
+                                        phase = metrics.optString("phase", "generating"),
+                                        elapsedSeconds = metrics.optDouble("elapsed_seconds", 0.0),
+                                        generatedTokens = metrics.optInt("generated_tokens", 0),
+                                        requestedMaxTokens = metrics.optInt("requested_max_tokens", 0),
+                                        remainingTokens = metrics.optInt("remaining_tokens", 0),
+                                        tokensPerSecond = metrics.optDouble("tokens_per_second", 0.0),
+                                        etaSeconds = if (metrics.isNull("eta_seconds")) null else metrics.optDouble("eta_seconds"),
+                                        timeToFirstTokenMs = if (metrics.isNull("time_to_first_token_ms")) null else metrics.optDouble("time_to_first_token_ms"),
+                                    )
+                                )
+                                continue
+                            }
+                            event.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }?.let {
+                                onError(it)
+                                return@Thread
+                            }
+                            val deltaObj = event.optJSONArray("choices")?.optJSONObject(0)
                                 ?.optJSONObject("delta")
                             // Guard isNull: Android's optString returns the literal
                             // "null" for a JSON-null content (role-only/final chunks).

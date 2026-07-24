@@ -149,6 +149,9 @@ export const ModelsPage: React.FC = () => {
     setSelectedQuants({ ...selectedQuants, [modelId]: quant });
   };
 
+  const modelSpec = (modelId: string, quant: string) =>
+    quant ? `${modelId}-${quant.toLowerCase()}` : modelId;
+
   // Start a background download (runs server-side; keeps going across tabs).
   const handleDownload = async (modelId: string) => {
     startTimes.current[modelId] = Date.now();
@@ -174,14 +177,11 @@ export const ModelsPage: React.FC = () => {
   };
 
   // Delete model
-  const handleDelete = async (modelId: string) => {
-    const quant = selectedQuants[modelId];
-    if (!quant) return;
-
-    if (!confirm(`Are you sure you want to delete the local files for ${modelId}?`)) return;
+  const handleDelete = async (modelSpec: string) => {
+    if (!confirm(`Are you sure you want to delete the local files for ${modelSpec}?`)) return;
 
     try {
-      await api.deleteModel(modelId);
+      await api.deleteModel(modelSpec);
       fetchCatalog();
     } catch (e: any) {
       alert(`Delete failed: ${e.message}`);
@@ -298,7 +298,8 @@ export const ModelsPage: React.FC = () => {
                     recommendations: activeVariant.recommendations,
                   }
                 : undefined;
-              const download = downloads[m.id];
+              const selectedModelSpec = modelSpec(m.id, selectedQuant);
+              const download = downloads[selectedModelSpec];
               const isDownloaded = activeVariant?.is_downloaded || false;
               
               return (
@@ -363,7 +364,7 @@ export const ModelsPage: React.FC = () => {
                         <button
                           className="btn btn-secondary"
                           style={{ ...styles.actionBtn, marginTop: "8px" }}
-                          onClick={() => handleCancelDownload(m.id)}
+                          onClick={() => handleCancelDownload(selectedModelSpec)}
                         >
                           Cancel
                         </button>
@@ -373,7 +374,7 @@ export const ModelsPage: React.FC = () => {
                         <span style={styles.downloadStatusText}>✅ Local Variant</span>
                         <button
                           className="btn btn-secondary"
-                          onClick={() => handleDelete(m.id)}
+                        onClick={() => handleDelete(selectedModelSpec)}
                           style={styles.actionBtn}
                         >
                           Delete
@@ -382,7 +383,7 @@ export const ModelsPage: React.FC = () => {
                     ) : (
                       <button
                         className="btn btn-primary"
-                        onClick={() => handleDownload(m.id)}
+                        onClick={() => handleDownload(selectedModelSpec)}
                         disabled={assessment?.fit_level === "does_not_fit"}
                         style={{
                           ...styles.actionBtn,
@@ -418,7 +419,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   header: {
     padding: "24px 30px",
     borderBottom: "1px solid var(--panel-border)",
-    background: "rgba(10, 10, 15, 0.3)"
+    background: "rgba(10, 10, 15, 0.3)",
+    position: "relative",
+    zIndex: 10
   },
   headerTitle: {
     fontSize: "22px",
@@ -437,7 +440,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     top: "calc(100% + 6px)",
     left: 0,
     right: 0,
-    zIndex: 50,
+    zIndex: 20,
     padding: "8px",
     borderRadius: "10px",
     border: "1px solid var(--panel-border)",
@@ -458,7 +461,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   contentArea: {
     flexGrow: 1,
     overflowY: "auto",
-    padding: "30px"
+    padding: "30px",
+    position: "relative",
+    zIndex: 1
   },
   loaderContainer: {
     display: "flex",

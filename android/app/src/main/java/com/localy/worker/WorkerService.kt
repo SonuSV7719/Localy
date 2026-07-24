@@ -33,6 +33,7 @@ class WorkerService : Service() {
 
     private lateinit var rpc: RpcWorker
     private lateinit var advertiser: NsdAdvertiser
+    private lateinit var metrics: WorkerMetricsServer
     private var wakeLock: PowerManager.WakeLock? = null
     // Keep the WiFi radio in high-perf mode (don't power-manage the RPC socket)
     // and keep multicast reception alive (so mDNS/NSD keeps answering) even when
@@ -45,18 +46,23 @@ class WorkerService : Service() {
         super.onCreate()
         rpc = RpcWorker(this)
         advertiser = NsdAdvertiser(this)
+        metrics = WorkerMetricsServer(this)
         createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopWorker()
+                stopWorker(stopService = true)
                 return START_NOT_STICKY
             }
-            else -> startWorker()
+            else -> {
+                startWorker()
+            }
         }
-        return START_STICKY
+        // Re-deliver the start intent after an OS restart so the worker is
+        // re-advertised instead of silently disappearing after a transient kill.
+        return START_REDELIVER_INTENT
     }
 
     private fun startWorker() {
@@ -72,6 +78,7 @@ class WorkerService : Service() {
             updateNotification(statusText)
             return
         }
+        val metricsAvailable = metrics.start()
 
         advertiser.register(
             port = RpcWorker.DEFAULT_PORT,
@@ -79,7 +86,8 @@ class WorkerService : Service() {
             budgetBytes = cap.offeredBytes,
             // Phones are slow nodes — advertise a modest compute score so the
             // coordinator assigns them fewer layers (less pipeline bottleneck).
-            computeScore = cap.threads.toDouble()
+            computeScore = cap.threads.toDouble(),
+            metricsPort = if (metricsAvailable) WorkerMetricsServer.DEFAULT_PORT else null
         )
 
         acquireWakeLock()
@@ -89,19 +97,22 @@ class WorkerService : Service() {
         updateNotification(statusText)
     }
 
-    private fun stopWorker() {
+    private fun stopWorker(stopService: Boolean) {
         advertiser.unregister()
+        metrics.stop()
         rpc.stop()
         releaseWakeLock()
         releaseWifiLocks()
         running = false
         statusText = "Stopped"
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        if (stopService) stopSelf()
     }
 
     override fun onDestroy() {
-        stopWorker()
+        // Always release resources. Only an explicit Stop disables restart;
+        // otherwise START_REDELIVER_INTENT brings sharing back after an OS restart.
+        stopWorker(stopService = false)
         super.onDestroy()
     }
 
@@ -111,7 +122,7 @@ class WorkerService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Localy:worker").apply {
             setReferenceCounted(false)
-            acquire(6 * 60 * 60 * 1000L) // safety cap: 6h
+            acquire()
         }
     }
 

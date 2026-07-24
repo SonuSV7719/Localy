@@ -54,6 +54,7 @@ class ChatActivity : AppCompatActivity() {
     private var discovered: List<ServerDiscovery.Server> = emptyList()
     private var models: List<String> = emptyList()
     private var streamCall: Call? = null
+    private var activeStreamFlush: (() -> Unit)? = null
     // Bumped whenever a stream is superseded (session switch / new chat / stop),
     // so late callbacks from an old stream can't corrupt the current chat.
     private var streamGen = 0
@@ -251,9 +252,11 @@ class ChatActivity : AppCompatActivity() {
      *  or corrupt a different conversation after a switch. */
     private fun cancelActiveStream() {
         if (streamCall != null) {
+            activeStreamFlush?.invoke()
             streamGen++
             streamCall?.cancel()
             streamCall = null
+            activeStreamFlush = null
         }
     }
 
@@ -458,6 +461,29 @@ class ChatActivity : AppCompatActivity() {
         attachments.clear(); stagedImages.clear(); renderAttachments()
         setStreaming(true)
         val gen = ++streamGen // this stream's generation; guards late callbacks
+        val pendingTokens = StringBuilder()
+        var renderScheduled = false
+
+        fun flushPendingTokens() {
+            val delta = synchronized(pendingTokens) {
+                if (pendingTokens.isEmpty()) "" else pendingTokens.toString().also { pendingTokens.setLength(0) }
+            }
+            if (delta.isEmpty()) return
+            assistant.content += delta
+            adapter.notifyItemChanged(assistantIndex)
+            scrollToEnd()
+        }
+
+        fun scheduleRender() {
+            if (renderScheduled) return
+            renderScheduled = true
+            ui.postDelayed({
+                renderScheduled = false
+                if (gen != streamGen) return@postDelayed
+                flushPendingTokens()
+            }, 16)
+        }
+        activeStreamFlush = { flushPendingTokens() }
 
         val history = items.dropLast(1).map { it.role to it.content }
         saveCurrent() // persist the user turn immediately
@@ -467,28 +493,37 @@ class ChatActivity : AppCompatActivity() {
             messages = history,
             imageUrls = imageUrls,
             onToken = { token ->
+                if (gen != streamGen) return@streamChat
+                synchronized(pendingTokens) {
+                    pendingTokens.append(token)
+                }
+                scheduleRender()
+            },
+            onMetrics = { metrics ->
                 runOnUiThread {
-                    if (gen != streamGen) return@runOnUiThread // superseded (switched chat)
-                    assistant.content += token
-                    adapter.notifyItemChanged(assistantIndex)
-                    scrollToEnd()
+                    if (gen != streamGen) return@runOnUiThread
+                    renderStreamMetrics(metrics)
                 }
             },
             onDone = {
                 runOnUiThread {
                     if (gen != streamGen) return@runOnUiThread
+                    flushPendingTokens()
                     if (assistant.content.isEmpty()) assistant.content = "(no response)"
                     adapter.notifyItemChanged(assistantIndex)
                     setStreaming(false)
+                    activeStreamFlush = null
                     saveCurrent(); loadSessions()
                 }
             },
             onError = { err ->
                 runOnUiThread {
                     if (gen != streamGen) return@runOnUiThread
+                    flushPendingTokens()
                     assistant.content = if (assistant.content.isEmpty()) "⚠ $err" else assistant.content + "\n\n⚠ $err"
                     adapter.notifyItemChanged(assistantIndex)
                     setStreaming(false)
+                    activeStreamFlush = null
                     saveCurrent()
                 }
             }
@@ -515,10 +550,29 @@ class ChatActivity : AppCompatActivity() {
         if (!on) streamCall = null
         binding.sendButton.text = if (on) "Stop" else "Send"
         binding.input.isEnabled = !on
+        binding.streamPanel.visibility = if (on) View.VISIBLE else View.GONE
+        if (on) {
+            binding.streamTitle.text = "Loading..."
+            binding.streamStats.text = "Waiting for first token..."
+        }
     }
 
     private fun scrollToEnd() {
         if (items.isNotEmpty()) binding.messagesList.scrollToPosition(items.size - 1)
+    }
+
+    private fun renderStreamMetrics(metrics: LocalyClient.StreamMetrics) {
+        val phase = when (metrics.phase) {
+            "loading" -> "Loading"
+            "generating" -> "Generating"
+            "complete" -> "Complete"
+            else -> metrics.phase.replaceFirstChar { it.uppercase() }
+        }
+        val eta = metrics.etaSeconds?.let { if (it <= 0.0) "done" else fmtDur(it) } ?: "--"
+        val ttft = metrics.timeToFirstTokenMs?.let { String.format("%.2fs", it / 1000.0) } ?: "--"
+        binding.streamTitle.text = "$phase | ${String.format("%.1f", metrics.tokensPerSecond)} tok/s"
+        binding.streamStats.text =
+            "${metrics.generatedTokens} tokens | ETA $eta | elapsed ${fmtDur(metrics.elapsedSeconds)} | TTFT $ttft | remaining ${metrics.remainingTokens}"
     }
 
     // --- pooled-load progress ---------------------------------------------
@@ -545,23 +599,41 @@ class ChatActivity : AppCompatActivity() {
         if (active && loading != null) {
             val stage = loading.optString("stage", "").ifBlank { phaseLabel(loading.optString("phase", "loading")) }
             val model = loading.optString("model", "")
-            val remote = loading.optInt("remote_count", 0)
-            val elapsed = loading.optDouble("elapsed_s", 0.0)
             val idle = loading.optDouble("idle_s", 0.0)
-            val pct = if (loading.isNull("percent")) null else loading.optDouble("percent")
             val bytesTotal = if (loading.isNull("bytes_total")) 0L else loading.optLong("bytes_total")
+            val bytesSent = if (loading.isNull("bytes_sent")) null else loading.optLong("bytes_sent")
+            val observed = loading.optString("transfer_measurement") == "observed_network"
+            val speed = if (loading.isNull("speed_bps")) null else loading.optDouble("speed_bps")
+            val eta = if (loading.isNull("eta_s")) null else loading.optDouble("eta_s")
 
             binding.poolTitle.text = "Loading $model across $nodeCount device(s) — $stage"
-            binding.poolProgress.isIndeterminate = pct == null
-            if (pct != null) binding.poolProgress.progress = pct.toInt()
+            binding.poolProgress.isIndeterminate = !observed || bytesTotal <= 0 || bytesSent == null
+            if (!binding.poolProgress.isIndeterminate) {
+                binding.poolProgress.progress = ((bytesSent!!.toDouble() / bytesTotal) * 100).toInt().coerceIn(0, 100)
+            }
 
-            // percent is a coarse stage estimate; no reliable ETA / transferred bytes.
             val parts = mutableListOf<String>()
+            if (observed && bytesSent != null) {
+                parts.add("received ${fmtBytes(bytesSent)}")
+                if (bytesTotal > 0) parts.add("planned ${fmtBytes(bytesTotal)}")
+                if (speed != null) parts.add("${fmtBytes(speed.toLong())}/s") else parts.add("measuring speed")
+                if (eta != null) parts.add("ETA ${fmtDur(eta)}")
+            } else {
+                parts.add("waiting for worker telemetry")
+                if (bytesTotal > 0) parts.add("planned ${fmtBytes(bytesTotal)}")
+            }
+            /*
             parts.add(if (pct != null) "~${pct.toInt()}% (stage)" else "working…")
             parts.add("elapsed ${fmtDur(elapsed)}")
             if (bytesTotal > 0) parts.add("~${fmtBytes(bytesTotal)} to $remote worker(s)")
+            */
             binding.poolStats.text = parts.joinToString("  ·  ")
-            binding.poolLog.text = if (idle > 20)
+            val transferIdle = if (loading.isNull("transfer_idle_s")) null else loading.optDouble("transfer_idle_s")
+            binding.poolLog.text = if (observed && transferIdle != null && transferIdle > 12)
+                "No worker data received in ${fmtDur(transferIdle)}. Check WiFi and keep the worker app open."
+            else if (!observed)
+                "The loader phase is live, but this worker has not supplied transfer counters yet."
+            else if (idle > 20)
                 "⏳ still working — no update in ${fmtDur(idle)} (slow worker over WiFi)"
             else loading.optString("last_log", "")
         } else if (pooledActive) {

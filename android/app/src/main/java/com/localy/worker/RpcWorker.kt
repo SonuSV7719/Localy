@@ -39,18 +39,12 @@ class RpcWorker(private val context: Context) {
             return false
         }
         return try {
-            // --cache: persist received tensors on-device so the coordinator
-            // doesn't re-stream the whole model every time we reconnect.
-            // The cache dir is chosen via the LLAMA_CACHE env var.
-            val cacheDir = File(context.filesDir, "rpc-cache").apply { mkdirs() }
             val pb = ProcessBuilder(
                 bin.absolutePath,
                 "--host", "0.0.0.0",
                 "--port", port.toString(),
-                "--threads", threads.toString(),
-                "--cache"
+                "--threads", threads.toString()
             )
-            pb.environment()["LLAMA_CACHE"] = cacheDir.absolutePath
             pb.redirectErrorStream(true)
             pb.directory(context.filesDir)
             val proc = pb.start()

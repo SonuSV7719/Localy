@@ -1,5 +1,5 @@
 // API Client wrapper for backend communication
-import { ChatCompletionRequest } from "./types";
+import { ChatCompletionRequest, ChatStreamMetrics } from "./types";
 
 export const API_BASE_URL = "http://127.0.0.1:11434";
 
@@ -102,7 +102,8 @@ export const apiClient = {
     onChunk: (token: string) => void,
     onDone: () => void,
     onError: (err: Error) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onMetrics?: (metrics: ChatStreamMetrics) => void
   ): Promise<void> {
     try {
       const response = await fetch(`${API_BASE_URL}/v1/chat/completions`, {
@@ -150,14 +151,24 @@ export const apiClient = {
               return;
             }
 
+            let data: any;
             try {
-              const data = JSON.parse(dataStr);
-              const token = data.choices?.[0]?.delta?.content;
-              if (token) {
-                onChunk(token);
-              }
-            } catch (e) {
+              data = JSON.parse(dataStr);
+            } catch {
               // Ignore parse errors on malformed lines
+              continue;
+            }
+
+            if (data.localy?.type === "stream_metrics") {
+              onMetrics?.(data.localy as ChatStreamMetrics);
+              continue;
+            }
+            if (data.error?.message) {
+              throw new Error(data.error.message);
+            }
+            const token = data.choices?.[0]?.delta?.content;
+            if (token) {
+              onChunk(token);
             }
           }
         }

@@ -17,6 +17,8 @@ the state lives here on the server, not in any one client.
 from __future__ import annotations
 
 import re
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -89,8 +91,14 @@ class Coordinator:
         self._ready_at = 0.0
         self._last_log_at = 0.0       # wall time of the last log line (stall detection)
         self._progress_frac: float | None = None  # 0..1 if parseable from output
-        self._transfer_started_at = 0.0  # when weight-streaming began (for speed/ETA)
-        self._bytes_total = 0         # approx bytes to stream to remote workers
+        self._bytes_total = 0         # planned remote weight allocation
+        self._metric_endpoints: list[str] = []
+        self._metric_baselines: dict[str, int] = {}
+        self._metric_samples: deque[tuple[float, int]] = deque(maxlen=30)
+        self._observed_bytes: int | None = None
+        self._last_transfer_at = 0.0
+        self._metrics_stop = threading.Event()
+        self._metrics_reader: threading.Thread | None = None
         self._node_count = 0
         self._remote_count = 0
         self._last_log = ""
@@ -139,6 +147,7 @@ class Coordinator:
             raise ClusterFormationError(
                 "No remote workers in the shard plan; nothing to pool with."
             )
+        self._verify_rpc_workers(endpoints)
 
         # How much weight data must stream to the remote (non-local) devices —
         # the local device's share stays in local memory. Used for the UI's
@@ -187,8 +196,17 @@ class Coordinator:
             self._started_at = time.time()
             self._ready_at = 0.0
             self._progress_frac = None
-            self._transfer_started_at = 0.0
             self._bytes_total = bytes_total
+            self._metric_endpoints = [
+                f"http://{node.host}:{node.metrics_port}/metrics"
+                for node in plan.nodes
+                if not node.is_local and node.metrics_port
+            ]
+            self._metric_baselines = {}
+            self._metric_samples.clear()
+            self._observed_bytes = None
+            self._last_transfer_at = 0.0
+            self._metrics_stop.clear()
             self._node_count = len(plan.nodes)
             self._remote_count = len(endpoints)
             self._last_log = ""
@@ -196,10 +214,68 @@ class Coordinator:
 
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
+        if self._metric_endpoints:
+            self._metrics_reader = threading.Thread(target=self._read_worker_metrics, daemon=True)
+            self._metrics_reader.start()
         self._monitor = threading.Thread(
             target=self._await_ready, args=(ready_timeout,), daemon=True
         )
         self._monitor.start()
+
+    @staticmethod
+    def _verify_rpc_workers(endpoints: list[str]) -> None:
+        """Fail fast when a worker accepts TCP but cannot speak llama RPC.
+
+        A TCP probe alone is insufficient: a stale Android RPC cache can accept
+        a connection then block before its HELLO response. This sends the
+        llama.cpp RPC HELLO, device-count, and memory commands directly, so it
+        exercises the exact transport without launching a second server process.
+        """
+        for endpoint in endpoints:
+            try:
+                host, port_text = endpoint.rsplit(":", 1)
+                with socket.create_connection((host, int(port_text)), timeout=4.0) as conn:
+                    conn.settimeout(4.0)
+                    # RPC_CMD_HELLO=14, request size=24, zero transport caps.
+                    conn.sendall(b"\x0e" + struct.pack("<Q", 24) + bytes(24))
+                    response = Coordinator._recv_rpc_message(conn)
+                    if len(response) != 28 or response[0] != 4:
+                        raise ValueError("unexpected HELLO response")
+
+                    # RPC_CMD_DEVICE_COUNT=15 with an empty request.
+                    conn.sendall(b"\x0f" + struct.pack("<Q", 0))
+                    device_count = Coordinator._recv_rpc_message(conn)
+                    if len(device_count) != 4 or struct.unpack("<I", device_count)[0] < 1:
+                        raise ValueError("worker reported no usable devices")
+
+                    # RPC_CMD_GET_DEVICE_MEMORY=11 for device 0.
+                    conn.sendall(b"\x0b" + struct.pack("<Q", 4) + struct.pack("<I", 0))
+                    memory = Coordinator._recv_rpc_message(conn)
+                    if len(memory) != 16 or struct.unpack("<Q", memory[8:])[0] <= 0:
+                        raise ValueError("worker reported invalid device memory")
+            except (OSError, ValueError, struct.error) as e:
+                raise ClusterFormationError(
+                    f"Worker {endpoint} failed the RPC handshake: {e}. "
+                    "Restart sharing on that device and try again."
+                ) from e
+
+    @staticmethod
+    def _recv_rpc_message(conn: socket.socket) -> bytes:
+        size_raw = Coordinator._recv_exact(conn, 8)
+        size = struct.unpack("<Q", size_raw)[0]
+        if size > 1024 * 1024:
+            raise ValueError(f"invalid RPC response size {size}")
+        return Coordinator._recv_exact(conn, size)
+
+    @staticmethod
+    def _recv_exact(conn: socket.socket, size: int) -> bytes:
+        data = bytearray()
+        while len(data) < size:
+            chunk = conn.recv(size - len(data))
+            if not chunk:
+                raise OSError("connection closed before the RPC response")
+            data.extend(chunk)
+        return bytes(data)
 
     # --- background threads ------------------------------------------------
 
@@ -219,6 +295,7 @@ class Coordinator:
 
     def _ingest_line(self, line: str) -> None:
         low = line.lower()
+        fatal_error: str | None = None
         with self._lock:
             self._last_log = line[:300]
             self._last_log_at = time.time()
@@ -226,6 +303,11 @@ class Coordinator:
 
             if self._phase == "starting":
                 self._phase = "loading"
+
+            # llama-server can otherwise continue in local-only mode when a
+            # remote endpoint drops. Never present that as a pooled load.
+            if "failed to connect to" in low or "remote rpc server crashed" in low:
+                fatal_error = "Lost the RPC worker while starting the pooled model."
 
             # Advance the progress fraction monotonically from phase markers, so
             # the bar only ever moves forward regardless of log ordering.
@@ -247,6 +329,8 @@ class Coordinator:
                             self._progress_frac = mapped
                 except ValueError:
                     pass
+        if fatal_error:
+            self._fail(fatal_error)
 
     def _await_ready(self, timeout: float) -> None:
         """Poll llama-server /health until ready, the process dies, or timeout."""
@@ -276,6 +360,40 @@ class Coordinator:
                 pass
             time.sleep(1.0)
         self._fail("Timed out waiting for the pooled server to become ready.")
+
+    def _read_worker_metrics(self) -> None:
+        """Collect Android worker UID traffic counters while model layers load.
+
+        llama.cpp exposes no RPC byte counter. Localy Android workers provide a
+        tiny read-only endpoint backed by Android's per-UID traffic accounting,
+        which gives the UI observed network transfer rather than a phase guess.
+        """
+        while not self._metrics_stop.wait(0.75):
+            if not self.is_running:
+                return
+            values: dict[str, int] = {}
+            for endpoint in self._metric_endpoints:
+                try:
+                    response = httpx.get(endpoint, timeout=0.6)
+                    value = response.json().get("rx_bytes")
+                    if response.status_code == 200 and isinstance(value, int) and value >= 0:
+                        values[endpoint] = value
+                except (httpx.HTTPError, ValueError, TypeError):
+                    continue
+            if len(values) != len(self._metric_endpoints):
+                continue
+            now = time.time()
+            with self._lock:
+                for endpoint, value in values.items():
+                    self._metric_baselines.setdefault(endpoint, value)
+                observed = sum(
+                    max(0, values[endpoint] - self._metric_baselines[endpoint])
+                    for endpoint in self._metric_endpoints
+                )
+                if self._observed_bytes is None or observed > self._observed_bytes:
+                    self._last_transfer_at = now
+                self._observed_bytes = observed
+                self._metric_samples.append((now, observed))
 
     def _fail(self, message: str) -> None:
         with self._lock:
@@ -311,36 +429,23 @@ class Coordinator:
             if active and self._last_log_at:
                 idle = max(0.0, time.time() - self._last_log_at)
 
-            # --- estimated transfer readout (bytes sent / speed / ETA) ---------
-            # percent is a coarse *phase* estimate parsed from log markers, not a
-            # byte counter, so everything derived from it is an estimate too.
-            # We map the phase fraction onto the weight-streaming band to get a
-            # transfer fraction, then derive bytes-sent, a cumulative transfer
-            # speed, and an ETA. All flagged with *_is_estimate so the UI can be
-            # honest ("~") rather than implying exact byte accounting.
-            bytes_sent: int | None = None
+            # Loader phases are useful status only. They never become transfer
+            # counters: llama.cpp does not expose byte-exact RPC progress.
+            bytes_sent = self._observed_bytes
             eta_s: float | None = None
             speed_bps: float | None = None
-            if frac is not None and self._bytes_total > 0:
-                span = _TRANSFER_BAND_END - _TRANSFER_BAND_START
-                transfer_frac = (frac - _TRANSFER_BAND_START) / span
-                transfer_frac = max(0.0, min(1.0, transfer_frac))
-                if self._ready:
-                    transfer_frac = 1.0
-                bytes_sent = int(self._bytes_total * transfer_frac)
-
-                # Mark when streaming began so speed reflects the transfer, not
-                # the earlier metadata-reading phase.
-                if transfer_frac > 0.0 and self._transfer_started_at == 0.0:
-                    self._transfer_started_at = time.time()
-                if self._transfer_started_at:
-                    end = self._ready_at if self._ready_at else time.time()
-                    t_elapsed = max(0.0, end - self._transfer_started_at)
-                    if t_elapsed > 1.0 and bytes_sent > 0:
-                        speed_bps = bytes_sent / t_elapsed
-                        remaining = max(0, self._bytes_total - bytes_sent)
-                        if speed_bps > 0 and not self._ready:
-                            eta_s = remaining / speed_bps
+            if bytes_sent is not None and len(self._metric_samples) >= 2:
+                started_at, started_bytes = self._metric_samples[0]
+                ended_at, ended_bytes = self._metric_samples[-1]
+                window = ended_at - started_at
+                if window >= 1.0 and ended_bytes > started_bytes:
+                    speed_bps = (ended_bytes - started_bytes) / window
+                    remaining = max(0, self._bytes_total - bytes_sent)
+                    if speed_bps > 0 and not self._ready:
+                        eta_s = remaining / speed_bps
+            transfer_idle = None
+            if bytes_sent is not None:
+                transfer_idle = max(0.0, time.time() - self._last_transfer_at) if self._last_transfer_at else elapsed
 
             return {
                 "active": active,
@@ -357,8 +462,10 @@ class Coordinator:
                 "idle_s": round(idle, 1),
                 "bytes_total": self._bytes_total or None,
                 "bytes_sent": bytes_sent,
-                "bytes_is_estimate": True,
+                "bytes_is_estimate": False if bytes_sent is not None else True,
                 "speed_bps": round(speed_bps, 1) if speed_bps is not None else None,
+                "transfer_measurement": "observed_network" if bytes_sent is not None else "not_available",
+                "transfer_idle_s": round(transfer_idle, 1) if transfer_idle is not None else None,
                 "node_count": self._node_count,
                 "remote_count": self._remote_count,
                 "last_log": self._last_log or None,
@@ -366,6 +473,7 @@ class Coordinator:
 
     def stop(self) -> None:
         self._cancelling = True
+        self._metrics_stop.set()
         if self._proc is None:
             with self._lock:
                 self._phase = "idle"
@@ -385,4 +493,7 @@ class Coordinator:
             self._phase = "stopped"
             self._stage = ""
             self._progress_frac = None
-            self._transfer_started_at = 0.0
+            self._metric_endpoints = []
+            self._metric_baselines = {}
+            self._metric_samples.clear()
+            self._observed_bytes = None

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
 import { apiClient } from "../api/client";
-import { RegistryModel, ChatMessage, PoolStatus, ShardPlan, ApiMessage, ContentPart } from "../api/types";
+import { RegistryModel, ChatMessage, PoolStatus, ShardPlan, ApiMessage, ContentPart, ChatStreamMetrics } from "../api/types";
 import { saveListWithTrim } from "../lib/safeStorage";
 import { parseThinking, parseUserContent, buildUserContent } from "../lib/messageContent";
+import { humanTime } from "../lib/format";
 import { Markdown } from "../components/Markdown";
 import { ThinkingBlock } from "../components/ThinkingBlock";
 import { DeviceContribution } from "../components/DeviceContribution";
@@ -38,6 +39,7 @@ export const ChatPage: React.FC = () => {
   const [tokSec, setTokSec] = useState<number>(0);
   const [generatedTokens, setGeneratedTokens] = useState<number>(0);
   const [waiting, setWaiting] = useState<boolean>(false); // true until first token
+  const [streamStats, setStreamStats] = useState<ChatStreamMetrics | null>(null);
 
   // Device pool status (for the multi-device contribution indicator)
   const [pool, setPool] = useState<PoolStatus | null>(null);
@@ -54,6 +56,7 @@ export const ChatPage: React.FC = () => {
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const renderRafRef = useRef<number | null>(null);
   const quotaWarnedRef = useRef<boolean>(false);
   // Which model has actually produced output this session — so the "first-run
   // load can take a moment" hint only shows before a model is loaded, not on
@@ -72,6 +75,7 @@ export const ChatPage: React.FC = () => {
       clearInterval(t);
       // Abort any in-flight stream when leaving the page.
       abortRef.current?.abort();
+      if (renderRafRef.current !== null) cancelAnimationFrame(renderRafRef.current);
     };
   }, []);
 
@@ -311,10 +315,11 @@ export const ChatPage: React.FC = () => {
     setWaiting(true);
     setGeneratedTokens(0);
     setTokSec(0);
+    setStreamStats(null);
 
     let acc = "";
     let tokenCount = 0;
-    const startTime = Date.now();
+    let latestRendered = "";
 
     const setAssistant = (content: string, doPersist = false) => {
       setConversations((prev) => {
@@ -329,6 +334,19 @@ export const ChatPage: React.FC = () => {
       });
     };
 
+    const flushAssistant = () => {
+      renderRafRef.current = null;
+      if (latestRendered !== acc) {
+        latestRendered = acc;
+        setAssistant(acc);
+      }
+    };
+
+    const scheduleAssistantFlush = () => {
+      if (renderRafRef.current !== null) return;
+      renderRafRef.current = requestAnimationFrame(flushAssistant);
+    };
+
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -340,26 +358,39 @@ export const ChatPage: React.FC = () => {
         loadedModelRef.current = selectedModel;
         acc += token;
         tokenCount++;
-        setGeneratedTokens(tokenCount);
-        const elapsed = (Date.now() - startTime) / 1000;
-        if (elapsed > 0) setTokSec(tokenCount / elapsed);
-        setAssistant(acc);
+        scheduleAssistantFlush();
       },
       () => {
+        if (renderRafRef.current !== null) {
+          cancelAnimationFrame(renderRafRef.current);
+          renderRafRef.current = null;
+        }
         setGenerating(false);
         setGeneratingConvId(null);
         setWaiting(false);
+        setStreamStats((prev) => prev ? { ...prev, phase: "complete", generated_tokens: tokenCount, eta_seconds: 0 } : prev);
+        setGeneratedTokens(tokenCount);
         setAssistant(acc, true);
         abortRef.current = null;
       },
       (err) => {
+        if (renderRafRef.current !== null) {
+          cancelAnimationFrame(renderRafRef.current);
+          renderRafRef.current = null;
+        }
         setGenerating(false);
         setGeneratingConvId(null);
         setWaiting(false);
         setAssistant(acc || `⚠ ${err.message}`, true);
         abortRef.current = null;
       },
-      controller.signal
+      controller.signal,
+      (stats) => {
+        setStreamStats(stats);
+        setGeneratedTokens(stats.generated_tokens);
+        setTokSec(stats.tokens_per_second);
+        if (stats.phase === "generating") setWaiting(false);
+      }
     );
   };
 
@@ -373,6 +404,15 @@ export const ChatPage: React.FC = () => {
 
   // Does the selected model accept images?
   const visionModel = models.find((m) => m.id === selectedModel)?.supports_vision === true;
+  const etaLabel = streamStats?.eta_seconds == null
+    ? "--"
+    : streamStats.eta_seconds <= 0
+      ? "done"
+      : humanTime(streamStats.eta_seconds);
+  const elapsedLabel = streamStats ? humanTime(streamStats.elapsed_seconds) : "--";
+  const ttftLabel = streamStats?.time_to_first_token_ms == null
+    ? "--"
+    : `${(streamStats.time_to_first_token_ms / 1000).toFixed(2)}s`;
 
   return (
     <div style={styles.chatWrapper}>
@@ -441,7 +481,9 @@ export const ChatPage: React.FC = () => {
             <span>Conversational Chat</span>
             {generating && (
               <span style={styles.liveStat} className="pulse-indicator">
-                ⚡ {tokSec.toFixed(1)} tok/s ({generatedTokens} tokens)
+                {streamStats?.phase === "loading" ? "Loading" : "Generating"} | {tokSec.toFixed(1)} tok/s
+                {" | "}
+                {generatedTokens} tokens | ETA {etaLabel}
               </span>
             )}
             {multiDevice && (
@@ -482,6 +524,16 @@ export const ChatPage: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {generating && streamStats && (
+          <div style={styles.streamStatsBar}>
+            <span>Phase: {streamStats.phase}</span>
+            <span>Elapsed: {elapsedLabel}</span>
+            <span>TTFT: {ttftLabel}</span>
+            <span>Remaining: {streamStats.remaining_tokens}</span>
+            {multiDevice && activePlan && <span>Layer split: {activePlan.tensor_split.join(" / ")}</span>}
+          </div>
+        )}
 
         {/* Multi-device contribution detail (real layer split) */}
         {multiDevice && poolExpanded && activePlan && (
@@ -766,6 +818,18 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderRadius: "4px",
     color: "#818cf8",
     padding: "3px 8px",
+  },
+  streamStatsBar: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+    minHeight: "34px",
+    alignItems: "center",
+    padding: "6px 24px",
+    fontSize: "12px",
+    color: "#a1a1aa",
+    borderBottom: "1px solid var(--panel-border)",
+    background: "rgba(10, 10, 15, 0.22)",
   },
   deviceBadge: {
     fontSize: "12px",

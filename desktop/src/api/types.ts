@@ -122,6 +122,18 @@ export interface ChatCompletionRequest {
   stream?: boolean;
 }
 
+export interface ChatStreamMetrics {
+  type: "stream_metrics";
+  phase: "loading" | "generating" | "complete" | string;
+  elapsed_seconds: number;
+  generated_tokens: number;
+  requested_max_tokens: number;
+  remaining_tokens: number;
+  tokens_per_second: number;
+  eta_seconds: number | null;
+  time_to_first_token_ms: number | null;
+}
+
 export interface ChatCompletionChoice {
   index: number;
   message: {
@@ -177,9 +189,11 @@ export interface PoolLoadProgress {
   percent_is_estimate?: boolean;
   idle_s?: number; // seconds since the loader last logged (stall hint)
   bytes_total: number | null;
-  bytes_sent: number | null; // estimated from the phase fraction
+  bytes_sent: number | null; // observed worker network bytes when available
   bytes_is_estimate?: boolean;
-  speed_bps?: number | null; // estimated transfer speed (bytes/sec)
+  speed_bps?: number | null; // measured worker network bytes/sec
+  transfer_measurement?: "observed_network" | "not_available";
+  transfer_idle_s?: number | null;
   node_count: number;
   remote_count: number;
   last_log: string | null;
@@ -224,7 +238,11 @@ export interface DiscoveredWorker {
   port: number;
   label: string;
   budget_gb: number | null;
+  metrics_port?: number | null;
 }
+
+export interface PoolOperationEvent { at: number; kind: string; message: string; details: Record<string, unknown>; }
+export interface PoolOperations { status: PoolStatus; events: PoolOperationEvent[]; model_size_bytes: number | null; }
 
 // --- API access ---
 

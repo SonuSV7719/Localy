@@ -22,7 +22,7 @@ class NsdAdvertiser(private val context: Context) {
     private var nsdManager: NsdManager? = null
     private var listener: NsdManager.RegistrationListener? = null
 
-    fun register(port: Int, label: String, budgetBytes: Long, computeScore: Double) {
+    fun register(port: Int, label: String, budgetBytes: Long, computeScore: Double, metricsPort: Int?) {
         val info = NsdServiceInfo().apply {
             serviceName = "${Build.MODEL}-$port".replace(" ", "-")
             serviceType = SERVICE_TYPE
@@ -32,6 +32,7 @@ class NsdAdvertiser(private val context: Context) {
                 setAttribute("budget", budgetBytes.toString())
                 setAttribute("compute", computeScore.toString())
                 setAttribute("node_id", "$label:$port")
+                metricsPort?.let { setAttribute("metrics_port", it.toString()) }
             }
         }
 

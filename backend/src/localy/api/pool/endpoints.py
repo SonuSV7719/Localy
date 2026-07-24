@@ -37,12 +37,22 @@ async def pool_status(settings: Settings = Depends(get_settings)) -> PoolStatusR
     return PoolStatusResponse(**get_pool_service(settings).status())
 
 
+@pool_router.get("/operations", dependencies=[Depends(verify_api_key)])
+async def pool_operations(settings: Settings = Depends(get_settings)) -> dict:
+    """Live device topology and in-process coordination audit timeline."""
+    return get_pool_service(settings).operations()
+
+
 @pool_router.post("/join", response_model=PoolNodeResponse, dependencies=[Depends(verify_api_key)])
 async def pool_join(req: JoinRequest, settings: Settings = Depends(get_settings)) -> PoolNodeResponse:
     """Add a remote worker to the pool."""
     budget_bytes = req.budget_mib * 1024 * 1024 if req.budget_mib else None
     node = get_pool_service(settings).join(
-        host=req.host, port=req.port, label=req.label, budget_bytes=budget_bytes
+        host=req.host,
+        port=req.port,
+        label=req.label,
+        budget_bytes=budget_bytes,
+        metrics_port=req.metrics_port,
     )
     return PoolNodeResponse(
         node_id=node.node_id,

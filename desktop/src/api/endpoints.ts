@@ -131,6 +131,10 @@ export const api = {
     return apiClient.get<PoolStatus>("/pool/status");
   },
 
+  async getPoolOperations(): Promise<import("./types").PoolOperations> {
+    return apiClient.get("/pool/operations");
+  },
+
   /** Workers advertised on the LAN via mDNS (optionally auto-join). */
   async discoverPool(autoJoin: boolean = false): Promise<DiscoveredWorker[]> {
     return apiClient.get<DiscoveredWorker[]>(`/pool/discover?auto_join=${autoJoin}`);
@@ -138,9 +142,10 @@ export const api = {
 
   /** Add a worker by address. Pass budgetGb from discovery so the planner uses
    *  the worker's REAL memory (otherwise the backend falls back to a guess). */
-  async joinPool(host: string, port: number, label: string = "", budgetGb?: number | null): Promise<any> {
+  async joinPool(host: string, port: number, label: string = "", budgetGb?: number | null, metricsPort?: number | null): Promise<any> {
     const body: Record<string, unknown> = { host, port, label };
     if (budgetGb && budgetGb > 0) body.budget_mib = Math.round(budgetGb * 1024);
+    if (metricsPort && metricsPort > 0) body.metrics_port = metricsPort;
     return apiClient.post<any>("/pool/join", body);
   },
 

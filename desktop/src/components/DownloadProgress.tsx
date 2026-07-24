@@ -11,7 +11,9 @@ interface Props {
 /** Streaming download progress with speed, ETA, and completed/remaining analysis. */
 export const DownloadProgress: React.FC<Props> = ({ stats, status, compact }) => {
   const pct = stats ? stats.percent : 0;
-  const label = status && status !== "downloading" ? status : "Downloading";
+  const label = stats
+    ? (status && status !== "downloading" ? status : "Downloading")
+    : "Preparing transfer";
 
   return (
     <div style={styles.wrap}>
@@ -29,6 +31,7 @@ export const DownloadProgress: React.FC<Props> = ({ stats, status, compact }) =>
           <Metric label="Downloaded" value={`${humanBytes(stats.completed)} / ${humanBytes(stats.total)}`} />
           <Metric label="Speed" value={humanSpeed(stats.speedBps)} />
           <Metric label="Time left" value={humanTime(stats.etaSeconds)} />
+          {compact && <Metric label="Remaining" value={humanBytes(Math.max(0, stats.total - stats.completed))} />}
           {!compact && <Metric label="Elapsed" value={humanTime(stats.elapsedSeconds)} />}
           {!compact && (
             <Metric label="Remaining" value={humanBytes(Math.max(0, stats.total - stats.completed))} />
