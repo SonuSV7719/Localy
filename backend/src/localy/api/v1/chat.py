@@ -266,7 +266,42 @@ async def _proxy_to_pool(base_url: str, request: ChatCompletionRequest):
                     },
                 )
 
+    def telemetry(
+        started_at: float,
+        first_token_at: float | None,
+        phase: str,
+        tokens: int = 0,
+        final: bool = False,
+    ) -> str:
+        elapsed = max(0.0, time.perf_counter() - started_at)
+        tps = tokens / elapsed if elapsed > 0 and tokens > 0 else 0.0
+        requested = request.max_tokens or get_settings().default_context_length
+        remaining = max(requested - tokens, 0)
+        eta = remaining / tps if tps > 0 and not final else 0.0 if final else None
+        data = {
+            "localy": {
+                "type": "stream_metrics",
+                "phase": phase,
+                "elapsed_seconds": round(elapsed, 3),
+                "generated_tokens": tokens,
+                "requested_max_tokens": requested,
+                "remaining_tokens": remaining,
+                "tokens_per_second": round(tps, 3),
+                "eta_seconds": round(eta, 3) if eta is not None else None,
+                "time_to_first_token_ms": (
+                    round((first_token_at - started_at) * 1000, 1)
+                    if first_token_at is not None
+                    else None
+                ),
+            }
+        }
+        return f"data: {json.dumps(data)}\n\n"
+
     async def sse_passthrough() -> AsyncGenerator[str, None]:
+        started_at = time.perf_counter()
+        first_token_at: float | None = None
+        generated_tokens = 0
+        yield telemetry(started_at, first_token_at, "loading")
         try:
             timeout = httpx.Timeout(None, connect=10.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -279,9 +314,36 @@ async def _proxy_to_pool(base_url: str, request: ChatCompletionRequest):
                         yield "data: [DONE]\n\n"
                         return
 
-                    async for raw in resp.aiter_raw():
-                        if raw:
-                            yield raw.decode("utf-8", errors="replace")
+                    async for line in resp.aiter_lines():
+                        if line == "":
+                            continue
+
+                        if not line.startswith("data: "):
+                            yield f"{line}\n\n"
+                            continue
+
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            yield telemetry(started_at, first_token_at, "complete", generated_tokens, final=True)
+                            yield f"{line}\n\n"
+                            continue
+
+                        yield f"{line}\n\n"
+
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        choices = data.get("choices") or []
+                        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                        delta = first_choice.get("delta") if isinstance(first_choice.get("delta"), dict) else {}
+                        content = delta.get("content")
+                        if content:
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
+                            generated_tokens += 1
+                            yield telemetry(started_at, first_token_at, "generating", generated_tokens)
         except Exception as e:  # pragma: no cover - network edge
             err = {"error": {"message": f"pool proxy error: {e}", "type": "server_error"}}
             yield f"data: {json.dumps(err)}\n\n"

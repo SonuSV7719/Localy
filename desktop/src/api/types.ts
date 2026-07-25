@@ -173,6 +173,7 @@ export interface PoolNode {
   is_local: boolean;
   label: string;
   budget_gb: number;
+  online?: boolean;
 }
 
 export interface PoolLoadProgress {
@@ -192,7 +193,7 @@ export interface PoolLoadProgress {
   bytes_sent: number | null; // observed worker network bytes when available
   bytes_is_estimate?: boolean;
   speed_bps?: number | null; // measured worker network bytes/sec
-  transfer_measurement?: "observed_network" | "not_available";
+  transfer_measurement?: "observed_network" | "estimated_from_loader" | "not_available";
   transfer_idle_s?: number | null;
   node_count: number;
   remote_count: number;
@@ -206,6 +207,8 @@ export interface PoolStatus {
   worker_running: boolean;
   node_count: number;
   remote_count: number;
+  online_count?: number;
+  offline_count?: number;
   total_budget_gb: number;
   loading?: PoolLoadProgress | null;
   nodes: PoolNode[];

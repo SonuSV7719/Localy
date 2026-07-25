@@ -1,6 +1,6 @@
 [project]
 name = "localy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fast, accessible local LLM platform — auto-tuned inference, honest hardware-fit advising, and seamless device pooling."
 readme = "README.md"
 license = { text = "MIT" }

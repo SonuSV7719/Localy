@@ -244,6 +244,9 @@ export const ModelsPage: React.FC = () => {
             <button className="btn btn-primary" onClick={searchHF} disabled={hfBusy === "search"}>
               {hfBusy === "search" ? "Searching…" : "🔍 Search HF"}
             </button>
+            <button className="btn btn-secondary" onClick={() => addHF(hfQuery.trim())} disabled={!hfQuery.trim() || !!hfBusy}>
+              Add link/repo
+            </button>
           </div>
 
           {showResults && (

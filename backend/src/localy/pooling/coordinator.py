@@ -69,6 +69,8 @@ _BUFFER_RE = re.compile(r"buffer size\s*=\s*([\d.]+)\s*MiB", re.IGNORECASE)
 # "X of Y transferred, ~N MB/s, ~T left" feedback they expect during a load.
 _TRANSFER_BAND_START = 0.25
 _TRANSFER_BAND_END = 0.96
+_RPC_PREFLIGHT_TIMEOUT_SECONDS = 15.0
+_MIN_OBSERVED_TRANSFER_BYTES = 1024 * 1024
 
 
 class Coordinator:
@@ -234,8 +236,8 @@ class Coordinator:
         for endpoint in endpoints:
             try:
                 host, port_text = endpoint.rsplit(":", 1)
-                with socket.create_connection((host, int(port_text)), timeout=4.0) as conn:
-                    conn.settimeout(4.0)
+                with socket.create_connection((host, int(port_text)), timeout=_RPC_PREFLIGHT_TIMEOUT_SECONDS) as conn:
+                    conn.settimeout(_RPC_PREFLIGHT_TIMEOUT_SECONDS)
                     # RPC_CMD_HELLO=14, request size=24, zero transport caps.
                     conn.sendall(b"\x0e" + struct.pack("<Q", 24) + bytes(24))
                     response = Coordinator._recv_rpc_message(conn)
@@ -430,10 +432,17 @@ class Coordinator:
                 idle = max(0.0, time.time() - self._last_log_at)
 
             # Loader phases are useful status only. They never become transfer
-            # counters: llama.cpp does not expose byte-exact RPC progress.
-            bytes_sent = self._observed_bytes
+            # counters when worker telemetry exists: llama.cpp does not expose
+            # byte-exact RPC progress.
+            raw_observed_bytes = self._observed_bytes
+            bytes_sent = raw_observed_bytes if (
+                raw_observed_bytes is not None
+                and raw_observed_bytes >= _MIN_OBSERVED_TRANSFER_BYTES
+            ) else None
             eta_s: float | None = None
             speed_bps: float | None = None
+            bytes_is_estimate = bytes_sent is None
+            transfer_measurement = "observed_network" if bytes_sent is not None else "not_available"
             if bytes_sent is not None and len(self._metric_samples) >= 2:
                 started_at, started_bytes = self._metric_samples[0]
                 ended_at, ended_bytes = self._metric_samples[-1]
@@ -443,8 +452,18 @@ class Coordinator:
                     remaining = max(0, self._bytes_total - bytes_sent)
                     if speed_bps > 0 and not self._ready:
                         eta_s = remaining / speed_bps
+            elif self._bytes_total and frac is not None:
+                transfer_frac = (frac - _TRANSFER_BAND_START) / (_TRANSFER_BAND_END - _TRANSFER_BAND_START)
+                transfer_frac = max(0.0, min(1.0, transfer_frac))
+                bytes_sent = int(self._bytes_total * transfer_frac)
+                transfer_measurement = "estimated_from_loader"
+                if elapsed > 1.0 and bytes_sent > 0:
+                    speed_bps = bytes_sent / elapsed
+                    remaining = max(0, self._bytes_total - bytes_sent)
+                    if speed_bps > 0 and not self._ready:
+                        eta_s = remaining / speed_bps
             transfer_idle = None
-            if bytes_sent is not None:
+            if self._observed_bytes is not None:
                 transfer_idle = max(0.0, time.time() - self._last_transfer_at) if self._last_transfer_at else elapsed
 
             return {
@@ -462,9 +481,9 @@ class Coordinator:
                 "idle_s": round(idle, 1),
                 "bytes_total": self._bytes_total or None,
                 "bytes_sent": bytes_sent,
-                "bytes_is_estimate": False if bytes_sent is not None else True,
+                "bytes_is_estimate": bytes_is_estimate,
                 "speed_bps": round(speed_bps, 1) if speed_bps is not None else None,
-                "transfer_measurement": "observed_network" if bytes_sent is not None else "not_available",
+                "transfer_measurement": transfer_measurement,
                 "transfer_idle_s": round(transfer_idle, 1) if transfer_idle is not None else None,
                 "node_count": self._node_count,
                 "remote_count": self._remote_count,
@@ -475,8 +494,7 @@ class Coordinator:
         self._cancelling = True
         self._metrics_stop.set()
         if self._proc is None:
-            with self._lock:
-                self._phase = "idle"
+            self._reset_state_after_stop("idle")
             return
         if self._proc.poll() is None:
             self._proc.terminate()
@@ -486,14 +504,23 @@ class Coordinator:
                 self._proc.kill()
         logger.info("coordinator_stopped", model=self._model_id)
         self._proc = None
+        self._reset_state_after_stop("stopped")
+
+    def _reset_state_after_stop(self, phase: str) -> None:
         with self._lock:
             self._model_id = None
             self._ready = False
             self._error = None
-            self._phase = "stopped"
+            self._phase = phase
             self._stage = ""
             self._progress_frac = None
+            self._bytes_total = 0
             self._metric_endpoints = []
             self._metric_baselines = {}
             self._metric_samples.clear()
             self._observed_bytes = None
+            self._last_transfer_at = 0.0
+            self._node_count = 0
+            self._remote_count = 0
+            self._last_log = ""
+            self._log_tail.clear()

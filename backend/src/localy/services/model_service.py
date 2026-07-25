@@ -7,7 +7,9 @@ and loading GGUF models with optimal configurations.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import unquote, urlparse
 
 from localy.core.config import Settings
 from localy.core.exceptions import ModelNotFoundError
@@ -65,24 +67,34 @@ class ModelService:
         return self._hf.search_gguf_models(query, limit=limit)
 
     def add_hf_model(self, repo_id: str) -> dict[str, Any]:
-        """Add a Hugging Face GGUF repo to the catalog (variants fetched dynamically)."""
-        import re as _re
+        """Add a model source to the catalog.
 
+        Accepts Hugging Face repo IDs/URLs, direct GGUF URLs, and GitHub repo or
+        release URLs that expose GGUF files.
+        """
         from localy.inference.model_registry import ModelEntry, QuantVariant
 
+        source = repo_id.strip()
+        direct_files = self._resolve_direct_gguf_sources(source)
+        if direct_files:
+            entry = self._entry_from_direct_files(source, direct_files)
+            self._manager.registry.add_model(entry)
+            return {"id": entry.full_id, "name": entry.name, "variants": len(entry.variants)}
+
+        repo_id = self._normalize_hf_repo_id(source)
         variants = self._hf.fetch_variants(repo_id, force=True)
         if not variants:
             raise ModelNotFoundError(
-                f"No downloadable GGUF variants found in '{repo_id}'.",
-                details={"repo": repo_id},
+                f"No downloadable GGUF variants found in '{source}'.",
+                details={"source": source, "repo": repo_id},
             )
 
         short = repo_id.split("/")[-1]
         # Infer parameter count from the repo name, e.g. "...-7B-..." -> 7.0.
-        m = _re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", short)
+        m = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", short)
         params = float(m.group(1)) if m else 0.0
-        name = _re.sub(r"[-_.]?(GGUF|gguf)$", "", short)
-        name = _re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower() or "model"
+        name = re.sub(r"[-_.]?(GGUF|gguf)$", "", short)
+        name = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower() or "model"
         family = name.split("-")[0]
 
         variant_map = {
@@ -110,6 +122,129 @@ class ModelService:
         )
         self._manager.registry.add_model(entry)
         return {"id": entry.full_id, "name": entry.name, "variants": len(variant_map)}
+
+    def _normalize_hf_repo_id(self, source: str) -> str:
+        parsed = urlparse(source)
+        if parsed.netloc.lower() in {"huggingface.co", "www.huggingface.co"}:
+            parts = [p for p in parsed.path.split("/") if p]
+            if len(parts) >= 2:
+                return f"{parts[0]}/{parts[1]}"
+        return source
+
+    def _resolve_direct_gguf_sources(self, source: str) -> list[dict[str, Any]]:
+        parsed = urlparse(source)
+        path = unquote(parsed.path)
+        if parsed.scheme in {"http", "https"} and path.lower().endswith(".gguf"):
+            return [self._direct_file_info(self._download_url_from_model_page(source))]
+
+        if parsed.netloc.lower() in {"github.com", "www.github.com"}:
+            parts = [p for p in parsed.path.split("/") if p]
+            if len(parts) >= 2:
+                return self._github_gguf_files(parts[0], parts[1])
+        return []
+
+    def _download_url_from_model_page(self, url: str) -> str:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        parts = [p for p in parsed.path.split("/") if p]
+        if host in {"huggingface.co", "www.huggingface.co"} and len(parts) >= 5 and parts[2] == "blob":
+            return f"https://huggingface.co/{parts[0]}/{parts[1]}/resolve/{parts[3]}/{'/'.join(parts[4:])}"
+        if host in {"github.com", "www.github.com"} and len(parts) >= 5 and parts[2] == "blob":
+            return f"https://raw.githubusercontent.com/{parts[0]}/{parts[1]}/{parts[3]}/{'/'.join(parts[4:])}"
+        return url
+
+    def _direct_file_info(self, url: str) -> dict[str, Any]:
+        import httpx
+
+        parsed = urlparse(url)
+        filename = unquote(parsed.path.rsplit("/", 1)[-1]) or "model.gguf"
+        size = 0
+        try:
+            with httpx.Client(follow_redirects=True, timeout=20.0) as client:
+                response = client.head(url)
+                if response.status_code < 400:
+                    size = int(response.headers.get("content-length", "0") or 0)
+        except Exception:
+            pass
+        return {"url": url, "filename": filename, "size": size}
+
+    def _github_gguf_files(self, owner: str, repo: str) -> list[dict[str, Any]]:
+        import httpx
+
+        files: list[dict[str, Any]] = []
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "Localy"}
+        base = f"https://api.github.com/repos/{owner}/{repo}"
+        try:
+            with httpx.Client(follow_redirects=True, timeout=20.0, headers=headers) as client:
+                releases = client.get(f"{base}/releases")
+                if releases.status_code < 400:
+                    for release in releases.json():
+                        for asset in release.get("assets", []):
+                            name = asset.get("name", "")
+                            url = asset.get("browser_download_url", "")
+                            if name.lower().endswith(".gguf") and url:
+                                files.append({"url": url, "filename": name, "size": int(asset.get("size") or 0)})
+                    if files:
+                        return files
+
+                repo_info = client.get(base)
+                if repo_info.status_code >= 400:
+                    return []
+                branch = repo_info.json().get("default_branch", "main")
+                tree = client.get(f"{base}/git/trees/{branch}?recursive=1")
+                if tree.status_code >= 400:
+                    return []
+                for item in tree.json().get("tree", []):
+                    path = item.get("path", "")
+                    if item.get("type") == "blob" and path.lower().endswith(".gguf"):
+                        files.append(
+                            {
+                                "url": f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}",
+                                "filename": path.rsplit("/", 1)[-1],
+                                "size": int(item.get("size") or 0),
+                            }
+                        )
+        except Exception as e:
+            logger.warning("github_model_source_failed", repo=f"{owner}/{repo}", error=str(e))
+        return files
+
+    def _entry_from_direct_files(self, source: str, files: list[dict[str, Any]]) -> Any:
+        from localy.inference.hf_catalog import parse_quantization
+        from localy.inference.model_registry import ModelEntry, QuantVariant
+
+        first_name = files[0]["filename"]
+        stem = re.sub(r"\.gguf$", "", first_name, flags=re.IGNORECASE)
+        clean = re.sub(r"[-_.]?(GGUF|gguf)$", "", stem)
+        name = re.sub(r"[^A-Za-z0-9]+", "-", clean).strip("-").lower() or "linked-model"
+        m = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", stem)
+        params = float(m.group(1)) if m else 0.0
+
+        variants: dict[str, QuantVariant] = {}
+        for idx, file in enumerate(files):
+            quant = parse_quantization(file["filename"]) or f"FILE_{idx + 1}"
+            if quant in variants:
+                quant = f"{quant}_{idx + 1}"
+            variants[quant] = QuantVariant(
+                quantization=quant,
+                file_size_bytes=int(file.get("size") or 0),
+                huggingface_repo="",
+                huggingface_file=file["filename"],
+                sha256="",
+                download_url=file["url"],
+            )
+
+        default_variant = "Q4_K_M" if "Q4_K_M" in variants else next(iter(variants))
+        return ModelEntry(
+            name=name,
+            display_name=stem.replace("-", " "),
+            family=name.split("-")[0],
+            parameter_count_billions=params,
+            description=f"Added from link/repository: {source}",
+            license="see source",
+            variants=variants,
+            default_variant=default_variant,
+            tags=["linked"],
+        )
 
     def list_models(self, dynamic: bool = True) -> list[dict[str, Any]]:
         """List all models in the registry annotated with local status and hardware fit.

@@ -1,36 +1,20 @@
 # package-sidecar.ps1
-# Packages the Localy python backend as a Tauri sidecar using PyInstaller.
+# Packages the Localy backend into the Tauri resource folder used at runtime.
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "📦 Starting Localy Backend Sidecar Packaging..." -ForegroundColor Cyan
-
-# Define paths
 $ProjectRoot = Resolve-Path "$PSScriptRoot\.."
-$BackendDir = "$ProjectRoot\backend"
-$DesktopDir = "$ProjectRoot\desktop"
-$BinariesDir = "$DesktopDir\src-tauri\binaries"
+$BuildScript = Join-Path $ProjectRoot "scripts\build-backend-exe.bat"
 
-# 1. Ensure output binaries directory exists
-if (-not (Test-Path $BinariesDir)) {
-    Write-Host "📁 Creating binaries output directory: $BinariesDir" -ForegroundColor Yellow
-    New-Item -ItemType Directory -Force -Path $BinariesDir | Out-Null
+if (-not (Test-Path $BuildScript)) {
+    throw "Backend build script not found: $BuildScript"
 }
 
-# 2. Package the backend CLI using PyInstaller via uv
-Write-Host "🔨 Compiling standalone executable..." -ForegroundColor Yellow
-Push-Location $BackendDir
+Write-Host "Packaging Localy backend resource..." -ForegroundColor Cyan
+& $BuildScript
 
-try {
-    # Run PyInstaller on a single line to avoid backtick continuation issues
-    uv run --no-project pyinstaller src/localy/cli/main.py --onefile --name "localy-backend-x86_64-pc-windows-msvc" --paths "src" --collect-all "llama_cpp" --collect-all "uvicorn" --collect-all "fastapi" --clean --distpath "$BinariesDir" --workpath "build" --specpath "build"
+if ($LASTEXITCODE -ne 0) {
+    throw "Backend packaging failed with exit code $LASTEXITCODE"
+}
 
-    Write-Host "✅ Standalone backend executable compiled successfully!" -ForegroundColor Green
-    Write-Host "📍 Location: $BinariesDir\localy-backend-x86_64-pc-windows-msvc.exe" -ForegroundColor Green
-}
-catch {
-    Write-Error "❌ Failed to package sidecar: $_"
-}
-finally {
-    Pop-Location
-}
+Write-Host "Backend resource packaging completed." -ForegroundColor Green

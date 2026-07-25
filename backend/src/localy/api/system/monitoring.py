@@ -155,10 +155,10 @@ async def add_catalog_model(
     payload: dict[str, str],
     model_service: ModelService = Depends(get_model_service),
 ) -> dict[str, Any]:
-    """Add a Hugging Face GGUF repo to the catalog (all its variants become available)."""
+    """Add a Hugging Face/GitHub/direct GGUF source to the catalog."""
     import asyncio
 
-    repo_id = payload.get("repo_id", "").strip()
+    repo_id = (payload.get("source") or payload.get("repo_id") or "").strip()
     if not repo_id:
         return {"error": "repo_id required"}
     return await asyncio.to_thread(model_service.add_hf_model, repo_id)

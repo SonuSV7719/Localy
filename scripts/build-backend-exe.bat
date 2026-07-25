@@ -2,8 +2,8 @@
 REM ============================================================================
 REM  build-backend-exe.bat -- Bundle the Localy backend into a standalone .exe
 REM  via PyInstaller, so the desktop app can ship it as a sidecar (no Python on
-REM  the target machine). Output is copied to the Tauri sidecar location with
-REM  the target-triple name Tauri expects.
+REM  the target machine). Output is copied to the Tauri resource folder that
+REM  desktop/src-tauri/src/sidecar.rs launches at runtime.
 REM  Run from repo root:  scripts\build-backend-exe.bat
 REM ============================================================================
 setlocal
@@ -13,9 +13,7 @@ set "PY=%BACKEND%\.venv\Scripts\python.exe"
 set "ENTRY=%BACKEND%\packaging\localy_backend.py"
 set "DIST=%BACKEND%\packaging\dist"
 set "WORK=%BACKEND%\packaging\build"
-REM Tauri sidecar target-triple name for Windows x64:
-set "TRIPLE=x86_64-pc-windows-msvc"
-set "SIDEDIR=%REPO%\desktop\src-tauri\binaries"
+set "RESOURCEDIR=%REPO%\desktop\src-tauri\resources\backend"
 
 if not exist "%PY%" ( echo [ERROR] venv python not found at %PY% & exit /b 1 )
 
@@ -42,13 +40,11 @@ echo [1/2] Running PyInstaller (bundling llama_cpp native libs)...
   --hidden-import python_multipart ^
   "%ENTRY%" || ( echo [ERROR] PyInstaller failed & exit /b 1 )
 
-echo [2/2] Copying bundle into the Tauri sidecar location...
-if not exist "%SIDEDIR%" mkdir "%SIDEDIR%"
-REM onedir output: dist\localy-backend\  (exe + _internal deps). Ship the folder
-REM as a Tauri resource and the exe as the triple-named sidecar entry.
+echo [2/2] Copying bundle into the Tauri resource folder...
+if exist "%RESOURCEDIR%" rmdir /S /Q "%RESOURCEDIR%"
 if exist "%DIST%\localy-backend\localy-backend.exe" (
-  copy /Y "%DIST%\localy-backend\localy-backend.exe" "%SIDEDIR%\localy-backend-%TRIPLE%.exe" >nul
-  echo [OK] Backend bundle at %DIST%\localy-backend  (exe copied to %SIDEDIR%)
+  xcopy /E /I /Y "%DIST%\localy-backend" "%RESOURCEDIR%" >nul
+  echo [OK] Backend resource refreshed at %RESOURCEDIR%
   exit /b 0
 )
 echo [ERROR] Expected exe not produced.

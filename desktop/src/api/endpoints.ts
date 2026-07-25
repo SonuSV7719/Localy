@@ -70,7 +70,7 @@ export const api = {
   },
 
   /**
-   * Add a Hugging Face GGUF repo to the catalog (all its variants become available).
+   * Add a Hugging Face/GitHub/direct GGUF source to the catalog.
    */
   async addCatalogModel(repoId: string): Promise<{ id?: string; variants?: number; error?: string }> {
     return apiClient.post<{ id?: string; variants?: number; error?: string }>(

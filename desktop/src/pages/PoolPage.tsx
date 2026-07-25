@@ -249,10 +249,11 @@ export const PoolPage: React.FC = () => {
                     <div>
                       <span style={styles.nodeLabel}>{n.label}</span>
                       {n.is_local && <span style={styles.localTag}>this device</span>}
+                      {!n.is_local && n.online === false && <span style={styles.offlineTag}>reconnecting</span>}
                       <div style={styles.nodeAddr}>{n.address}</div>
                     </div>
                     <div style={styles.nodeRight}>
-                      <span>~{n.budget_gb.toFixed(1)} GB</span>
+                      <span>{n.online === false ? "offline" : `~${n.budget_gb.toFixed(1)} GB`}</span>
                       {!n.is_local && (
                         <button className="btn btn-secondary" style={styles.smBtn} onClick={() => leave(n.node_id)}>
                           Remove
@@ -344,7 +345,7 @@ export const PoolPage: React.FC = () => {
                       {inPool ? (
                         <span style={styles.joinedTag}>✓ in pool</span>
                       ) : (
-                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label, w.budget_gb)}>
+                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label, w.budget_gb, w.metrics_port)}>
                           Join
                         </button>
                       )}
@@ -398,11 +399,15 @@ export const PoolPage: React.FC = () => {
             const load = status?.loading;
             const pct = load?.percent ?? null;
             const observed = load?.transfer_measurement === "observed_network";
-            const plannedRemaining = observed && load?.bytes_total != null && load.bytes_sent != null
-              ? Math.max(0, load.bytes_total - load.bytes_sent)
+            const estimated = load?.transfer_measurement === "estimated_from_loader";
+            const hasTransferProgress = (observed || estimated) && load?.bytes_total != null && load.bytes_sent != null;
+            const transferredBytes = hasTransferProgress ? load!.bytes_sent! : null;
+            const totalTransferBytes = hasTransferProgress ? load!.bytes_total! : null;
+            const plannedRemaining = hasTransferProgress
+              ? Math.max(0, totalTransferBytes! - transferredBytes!)
               : null;
-            const transferPct = observed && load?.bytes_total && load.bytes_sent != null
-              ? Math.min(100, (load.bytes_sent / load.bytes_total) * 100)
+            const transferPct = totalTransferBytes && transferredBytes != null
+              ? Math.min(100, (transferredBytes / totalTransferBytes) * 100)
               : null;
             return (
               <div style={styles.loadingBanner}>
@@ -428,7 +433,7 @@ export const PoolPage: React.FC = () => {
 
                 <div style={styles.statGrid}>
                   <div style={styles.stat}><span style={styles.statLabel}>Received by workers</span>
-                    {observed ? fmtBytes(load?.bytes_sent) : "Waiting for telemetry"}
+                    {hasTransferProgress ? fmtBytes(load?.bytes_sent) : "Waiting for telemetry"}
                   </div>
                   <div style={styles.stat}><span style={styles.statLabel}>Planned weight transfer</span>
                     {load?.bytes_total ? fmtBytes(load.bytes_total) : "--"}
@@ -437,9 +442,9 @@ export const PoolPage: React.FC = () => {
                     {plannedRemaining != null ? fmtBytes(plannedRemaining) : "Not measurable yet"}
                   </div>
                   <div style={styles.stat}><span style={styles.statLabel}>Measured speed</span>
-                    {observed ? (load?.speed_bps ? `${fmtBytes(load.speed_bps)}/s` : "Measuring...") : "Unavailable"}
+                    {hasTransferProgress ? (load?.speed_bps ? `${fmtBytes(load.speed_bps)}/s` : "Measuring...") : "Unavailable"}
                   </div>
-                  <div style={styles.stat}><span style={styles.statLabel}>Time left (estimate)</span>{observed ? fmtDuration(load?.eta_s) : "Waiting for transfer"}</div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Time left (estimate)</span>{hasTransferProgress ? fmtDuration(load?.eta_s) : "Waiting for transfer"}</div>
                   <div style={{ display: "none" }}>
                   <div style={styles.stat}><span style={styles.statLabel}>Transferred {pct != null ? "(est.)" : ""}</span>
                     {load?.bytes_total ? `${fmtBytes(load?.bytes_sent)} / ${fmtBytes(load.bytes_total)}` : (pct != null ? `~${pct.toFixed(0)}%` : "working…")}
@@ -461,7 +466,9 @@ export const PoolPage: React.FC = () => {
                   <div style={styles.loadingSub}>
                     {observed
                       ? `Live worker network traffic is being measured. ${fmtBytes(load.bytes_total)} is the planned weight allocation; protocol overhead and a warm worker cache can make it differ from received bytes.`
-                      : "This worker has not provided transfer telemetry yet. The loader phase is shown above, but no transferred bytes or ETA are invented from it."}
+                      : estimated
+                        ? `No worker byte counter is available, so progress is estimated from llama.cpp load phases. ${fmtBytes(load.bytes_total)} is the planned weight allocation.`
+                        : "This worker has not provided transfer telemetry yet. The loader phase is shown above while Localy waits for measurable progress."}
                   </div>
                   <div style={{ ...styles.loadingSub, display: "none" }}>
                     ~{fmtBytes(load.bytes_total)} of weights stream to {load?.remote_count || 1} worker device(s) over
@@ -556,6 +563,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   node: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px" },
   nodeLabel: { fontSize: "13px", fontWeight: 500, color: "#e4e4e7" },
   localTag: { fontSize: "10px", color: "#818cf8", marginLeft: "8px", textTransform: "uppercase" },
+  offlineTag: { fontSize: "10px", color: "#fbbf24", marginLeft: "8px", textTransform: "uppercase" },
   nodeAddr: { fontSize: "11px", color: "#71717a", marginTop: "2px", fontFamily: "monospace" },
   nodeRight: { display: "flex", alignItems: "center", gap: "12px", fontSize: "12px", color: "#a1a1aa" },
   smBtn: { fontSize: "12px", padding: "5px 12px" },
