@@ -168,7 +168,7 @@ class Coordinator:
             "--model", str(model_path),
             "--rpc", ",".join(endpoints),
             "--tensor-split", tensor_split,
-            "-ngl", "999",  # offload all layers across the (RPC) devices
+            "--fit", "on",
             "--host", self._host,
             "--port", str(self._port),
             "-c", str(n_ctx),
@@ -310,6 +310,17 @@ class Coordinator:
             # remote endpoint drops. Never present that as a pooled load.
             if "failed to connect to" in low or "remote rpc server crashed" in low:
                 fatal_error = "Lost the RPC worker while starting the pooled model."
+            elif (
+                "failed to fit params" in low
+                or "failed to allocate" in low
+                or "out of memory" in low
+                or "vk::outofdevicememory" in low
+            ):
+                fatal_error = (
+                    "llama.cpp could not fit the pooled model into the available "
+                    "device memory. Try a smaller quant/context, remove low-memory "
+                    "workers, or close other GPU-heavy apps before loading again."
+                )
 
             # Advance the progress fraction monotonically from phase markers, so
             # the bar only ever moves forward regardless of log ordering.
@@ -404,6 +415,7 @@ class Coordinator:
             self._phase = "error"
             self._ready = False
         logger.warning("coordinator_failed", model=self._model_id, error=message)
+        self._metrics_stop.set()
         # Reap the process if it's still hanging around.
         proc = self._proc
         if proc is not None and proc.poll() is None:
@@ -439,6 +451,8 @@ class Coordinator:
                 raw_observed_bytes is not None
                 and raw_observed_bytes >= _MIN_OBSERVED_TRANSFER_BYTES
             ) else None
+            if bytes_sent is not None and self._bytes_total:
+                bytes_sent = min(bytes_sent, self._bytes_total)
             eta_s: float | None = None
             speed_bps: float | None = None
             bytes_is_estimate = bytes_sent is None

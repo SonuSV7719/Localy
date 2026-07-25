@@ -4,7 +4,9 @@ import threading
 import time
 import sys
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, "src")
 
@@ -152,6 +154,93 @@ def test_coordinator_ignores_control_bytes_before_real_transfer() -> None:
     assert progress["bytes_sent"] is None
     assert progress["speed_bps"] is None
     assert progress["eta_s"] is None
+
+
+def test_coordinator_clamps_observed_transfer_to_planned_bytes() -> None:
+    coordinator = Coordinator(SimpleNamespace(coordinator_port=8080))
+    with coordinator._lock:
+        coordinator._phase = "loading"
+        coordinator._model_id = "test:1b"
+        coordinator._started_at = time.time() - 30
+        coordinator._last_log_at = time.time()
+        coordinator._bytes_total = 256 * 1024**2
+        coordinator._observed_bytes = 512 * 1024**2
+        coordinator._metric_samples.append((time.time() - 10, 128 * 1024**2))
+        coordinator._metric_samples.append((time.time(), 512 * 1024**2))
+        coordinator._last_transfer_at = time.time()
+        coordinator._node_count = 2
+        coordinator._remote_count = 1
+
+    progress = coordinator.progress()
+
+    assert progress["transfer_measurement"] == "observed_network"
+    assert progress["bytes_sent"] == progress["bytes_total"]
+    assert progress["eta_s"] == 0.0
+
+
+def test_coordinator_treats_fit_failure_log_as_fatal() -> None:
+    coordinator = Coordinator(SimpleNamespace(coordinator_port=8080))
+    with coordinator._lock:
+        coordinator._phase = "loading"
+        coordinator._model_id = "test:1b"
+        coordinator._started_at = time.time() - 5
+
+    coordinator._ingest_line(
+        "0.02.809.460 W common_fit_params: failed to fit params to free device memory: "
+        "n_gpu_layers already set by user to 999, abort"
+    )
+    progress = coordinator.progress()
+
+    assert progress["phase"] == "error"
+    assert progress["active"] is False
+    assert "could not fit the pooled model" in progress["error"]
+    assert "failed to fit params" in progress["error"]
+
+
+def test_coordinator_load_lets_llama_fit_gpu_layers() -> None:
+    coordinator = Coordinator(SimpleNamespace(coordinator_port=8080))
+    local = PoolNode("local", "local", 0, 8 * 1024**3, is_local=True, label="This device")
+    remote = PoolNode("phone:50052", "phone", 50052, 2 * 1024**3, label="Phone")
+    plan = ShardPlan(
+        fits=True,
+        model_size_bytes=1024**3,
+        required_bytes=int(1024**3 * 1.2),
+        total_budget_bytes=10 * 1024**3,
+        nodes=[local, remote],
+        tensor_split=[0.7, 0.3],
+        reason="fits",
+    )
+    commands: list[list[str]] = []
+
+    class FakeProc:
+        stdout = []
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> FakeProc:
+        commands.append(cmd)
+        return FakeProc()
+
+    with (
+        patch("localy.pooling.coordinator.llama_server_path", return_value=Path(__file__)),
+        patch.object(Coordinator, "_verify_rpc_workers", return_value=None),
+        patch("localy.pooling.coordinator.subprocess.Popen", side_effect=fake_popen),
+    ):
+        coordinator.start("test:1b", __file__, plan, n_ctx=512, ready_timeout=0.01)
+        coordinator.stop()
+
+    cmd = commands[0]
+    assert "-ngl" not in cmd
+    assert "--gpu-layers" not in cmd
+    assert "--fit" in cmd
+    assert cmd[cmd.index("--fit") + 1] == "on"
 
 
 def test_coordinator_stop_clears_transfer_progress() -> None:
