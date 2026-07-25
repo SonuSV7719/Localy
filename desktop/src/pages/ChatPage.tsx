@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/endpoints";
 import { apiClient } from "../api/client";
-import { RegistryModel, ChatMessage, PoolStatus, ShardPlan, ApiMessage, ContentPart, ChatStreamMetrics } from "../api/types";
+import { ChatMessage, PoolStatus, ShardPlan, ApiMessage, ContentPart, ChatStreamMetrics } from "../api/types";
 import { saveListWithTrim } from "../lib/safeStorage";
 import { parseThinking, parseUserContent, buildUserContent } from "../lib/messageContent";
 import { humanTime } from "../lib/format";
@@ -18,10 +18,16 @@ interface Conversation {
   archived?: boolean;
 }
 
+interface LocalModelOption {
+  id: string;
+  label: string;
+  supportsVision: boolean;
+}
+
 const STORAGE_KEY = "localy_conversations";
 
 export const ChatPage: React.FC = () => {
-  const [models, setModels] = useState<RegistryModel[]>([]);
+  const [modelOptions, setModelOptions] = useState<LocalModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
@@ -113,9 +119,22 @@ export const ChatPage: React.FC = () => {
     try {
       const data = await api.getModels();
       const downloaded = data.filter((m) => m.variants.some((v) => v.is_downloaded));
-      setModels(downloaded);
-      if (downloaded.length > 0) {
-        setSelectedModel(`${downloaded[0].id}`);
+      const options = downloaded.flatMap((m) =>
+        m.variants
+          .filter((v) => v.is_downloaded)
+          .map((v) => {
+            const isDefault = v.quantization === m.default_variant;
+            const id = isDefault ? m.id : `${m.id}-${v.quantization.toLowerCase()}`;
+            return {
+              id,
+              label: `${m.name} · ${v.quantization}`,
+              supportsVision: m.supports_vision === true,
+            };
+          })
+      );
+      setModelOptions(options);
+      if (options.length > 0) {
+        setSelectedModel((current) => options.some((o) => o.id === current) ? current : options[0].id);
       }
     } catch (e) {
       console.error("Failed to load models:", e);
@@ -403,7 +422,7 @@ export const ChatPage: React.FC = () => {
   const multiDevice = !!pool && pool.pooled_active && pool.node_count > 1;
 
   // Does the selected model accept images?
-  const visionModel = models.find((m) => m.id === selectedModel)?.supports_vision === true;
+  const visionModel = modelOptions.find((m) => m.id === selectedModel)?.supportsVision === true;
   const etaLabel = streamStats?.eta_seconds == null
     ? "--"
     : streamStats.eta_seconds <= 0
@@ -505,11 +524,11 @@ export const ChatPage: React.FC = () => {
               disabled={generating}
               style={styles.modelSelect}
             >
-              {models.length === 0 ? (
+              {modelOptions.length === 0 ? (
                 <option value="">No models downloaded</option>
               ) : (
-                models.map((m) => (
-                  <option key={m.id} value={m.id}>{m.name}</option>
+                modelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
                 ))
               )}
             </select>

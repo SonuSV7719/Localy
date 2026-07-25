@@ -300,6 +300,7 @@ class ModelService:
                     "description": entry.description,
                     "license": entry.license,
                     "context_length": entry.context_length,
+                    "default_variant": entry.default_variant,
                     "tags": entry.tags,
                     "supports_vision": self._supports_vision(entry, variants_info),
                     "variants": variants_info,
@@ -351,9 +352,15 @@ class ModelService:
             batch_override=self._settings.batch_size_override,
         )
 
+        served_model_id = (
+            entry.full_id
+            if variant.quantization == entry.default_variant
+            else f"{entry.full_id}-{variant.quantization.lower()}"
+        )
+
         engine = get_engine(self._settings)
         await engine.load_model(
-            model_id=entry.full_id,
+            model_id=served_model_id,
             model_path=model_path,
             config=config,
         )

@@ -62,12 +62,12 @@ export const ModelsPage: React.FC = () => {
       const next: { [id: string]: { stats: ProgressStats | null; status: string } } = {};
       const finished: string[] = [];
       for (const d of dls) {
-        if (d.status === "downloading") {
+        if (d.status === "downloading" || d.status === "cancelling") {
           const speedBps = d.speed_mbps * 1024 * 1024;
           const eta = speedBps > 0 && d.total ? (d.total - d.completed) / speedBps : Infinity;
           const start = startTimes.current[d.model_id] || Date.now();
           next[d.model_id] = {
-            status: "downloading",
+            status: d.status,
             stats: {
               completed: d.completed,
               total: d.total,
@@ -85,7 +85,7 @@ export const ModelsPage: React.FC = () => {
       setDownloads(next);
       if (finished.length) {
         finished.forEach((f) => f.startsWith("error:") && alert(`Download failed: ${f.slice(6)}`));
-        fetchCatalog();
+        if (finished.includes("done")) fetchCatalog();
       }
     } catch {
       /* backend momentarily unreachable */
@@ -172,8 +172,18 @@ export const ModelsPage: React.FC = () => {
 
   // Cancel an in-progress background download (partial kept for resume).
   const handleCancelDownload = async (modelId: string) => {
-    await api.cancelDownload(modelId);
-    pollDownloads();
+    setDownloads((prev) => {
+      const current = prev[modelId];
+      if (!current) return prev;
+      return { ...prev, [modelId]: { ...current, status: "cancelling" } };
+    });
+    try {
+      await api.cancelDownload(modelId);
+      window.setTimeout(pollDownloads, 250);
+    } catch (e: any) {
+      alert(`Cancel failed: ${e.message}`);
+      pollDownloads();
+    }
   };
 
   // Delete model
@@ -329,7 +339,7 @@ export const ModelsPage: React.FC = () => {
                     <select
                       value={selectedQuant}
                       onChange={(e) => handleQuantChange(m.id, e.target.value)}
-                      disabled={download?.status === "downloading"}
+                      disabled={download?.status === "downloading" || download?.status === "cancelling"}
                       style={styles.quantSelect}
                     >
                       {m.variants.map(v => (
@@ -368,8 +378,9 @@ export const ModelsPage: React.FC = () => {
                           className="btn btn-secondary"
                           style={{ ...styles.actionBtn, marginTop: "8px" }}
                           onClick={() => handleCancelDownload(selectedModelSpec)}
+                          disabled={download.status === "cancelling"}
                         >
-                          Cancel
+                          {download.status === "cancelling" ? "Cancelling..." : "Cancel"}
                         </button>
                       </div>
                     ) : isDownloaded ? (

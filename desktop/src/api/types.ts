@@ -93,6 +93,7 @@ export interface RegistryModel {
   family: string;
   parameter_count_billions: number;
   description: string;
+  default_variant?: string;
   supports_vision?: boolean;
   variants: RegistryVariant[];
 }
