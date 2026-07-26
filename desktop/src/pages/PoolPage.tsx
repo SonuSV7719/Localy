@@ -3,10 +3,15 @@ import { api } from "../api/endpoints";
 import { PoolStatus, ShardPlan, DiscoveredWorker, RegistryModel } from "../api/types";
 import { DeviceContribution } from "../components/DeviceContribution";
 
+interface LocalModelOption {
+  id: string;
+  label: string;
+}
+
 export const PoolPage: React.FC = () => {
   const [status, setStatus] = useState<PoolStatus | null>(null);
   const [discovered, setDiscovered] = useState<DiscoveredWorker[]>([]);
-  const [models, setModels] = useState<RegistryModel[]>([]);
+  const [modelOptions, setModelOptions] = useState<LocalModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [plan, setPlan] = useState<ShardPlan | null>(null);
   const [busy, setBusy] = useState<string>("");
@@ -100,8 +105,24 @@ export const PoolPage: React.FC = () => {
   const loadModels = async () => {
     try {
       const data = await api.getModels();
-      setModels(data);
-      if (data.length && !selectedModel) setSelectedModel(data[0].id);
+      const options = data.flatMap((m: RegistryModel) =>
+        m.variants
+          .filter((v) => v.is_downloaded)
+          .map((v) => {
+            const isDefault = v.quantization === m.default_variant;
+            const id = isDefault ? m.id : `${m.id}-${v.quantization.toLowerCase()}`;
+            return {
+              id,
+              label: `${m.name} (${m.parameter_count_billions.toFixed(1)}B) · ${v.quantization}`,
+            };
+          })
+      );
+      setModelOptions(options);
+      if (options.length) {
+        setSelectedModel((current) => options.some((o) => o.id === current) ? current : options[0].id);
+      } else {
+        setSelectedModel("");
+      }
     } catch {
       /* ignore */
     }
@@ -378,17 +399,21 @@ export const PoolPage: React.FC = () => {
               onChange={(e) => setSelectedModel(e.target.value)}
               disabled={loadingActive}
             >
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>{m.name} ({m.parameter_count_billions.toFixed(1)}B)</option>
-              ))}
+              {modelOptions.length === 0 ? (
+                <option value="">No downloaded model variants</option>
+              ) : (
+                modelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))
+              )}
             </select>
-            <button className="btn btn-secondary" onClick={checkFit} disabled={busy === "fit" || loadingActive}>
+            <button className="btn btn-secondary" onClick={checkFit} disabled={!selectedModel || busy === "fit" || loadingActive}>
               {busy === "fit" ? "Checking…" : "Check fit"}
             </button>
             <button
               className="btn btn-primary"
               onClick={runPooled}
-              disabled={loadingActive || (!!plan && !plan.fits)}
+              disabled={!selectedModel || loadingActive || (!!plan && !plan.fits)}
             >
               {loadingActive ? "Loading…" : "Run pooled"}
             </button>
