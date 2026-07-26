@@ -1,5 +1,6 @@
 import React from "react";
 import { ShardPlan, PoolStatus } from "../api/types";
+import { Monitor, Laptop } from "lucide-react";
 
 // Renders the live per-device contribution for a model served across the pool.
 // Uses the shard plan's real layer split (layer_share_pct) — i.e. which device
@@ -59,7 +60,15 @@ export const DeviceContribution: React.FC<Props> = ({ plan, status, compact }) =
           <div key={n.node_id} style={styles.row}>
             <div style={styles.labelCol}>
               <span style={styles.label}>
-                {n.is_local ? "🖥 This device" : `💻 ${n.label || n.address}`}
+                {n.is_local ? (
+                  <>
+                    <Monitor size={13} aria-hidden="true" /> This device
+                  </>
+                ) : (
+                  <>
+                    <Laptop size={13} aria-hidden="true" /> {n.label || n.address}
+                  </>
+                )}
               </span>
               {!compact && (
                 <span style={styles.meta}>
@@ -106,7 +115,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   head: { fontSize: "12px", color: "#a1a1aa", marginBottom: "10px" },
   row: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" },
   labelCol: { width: "200px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "2px" },
-  label: { fontSize: "12px", color: "#e4e4e7", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  label: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "#e4e4e7", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   meta: { fontSize: "10px", color: "#71717a", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   barTrack: { flexGrow: 1, height: "8px", background: "rgba(255,255,255,0.06)", borderRadius: "4px", overflow: "hidden" },
   barFill: { height: "100%", borderRadius: "4px", transition: "width 0.3s" },

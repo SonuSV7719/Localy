@@ -8,6 +8,23 @@ import { humanTime } from "../lib/format";
 import { Markdown } from "../components/Markdown";
 import { ThinkingBlock } from "../components/ThinkingBlock";
 import { DeviceContribution } from "../components/DeviceContribution";
+import {
+  Archive,
+  ArchiveRestore,
+  Bot,
+  Check,
+  Copy,
+  FileText,
+  Image as ImageIcon,
+  Link2,
+  MessageSquare,
+  Paperclip,
+  Pencil,
+  Plus,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 
 interface Conversation {
   id: string;
@@ -400,7 +417,7 @@ export const ChatPage: React.FC = () => {
         setGenerating(false);
         setGeneratingConvId(null);
         setWaiting(false);
-        setAssistant(acc || `⚠ ${err.message}`, true);
+        setAssistant(acc || `Warning: ${err.message}`, true);
         abortRef.current = null;
       },
       controller.signal,
@@ -438,7 +455,7 @@ export const ChatPage: React.FC = () => {
       {/* Sidebar: Chats List */}
       <div style={styles.sidebar} className="glass-panel">
         <button className="btn btn-primary" style={styles.newChatBtn} onClick={startNewChat}>
-          + New Chat
+          <Plus size={16} aria-hidden="true" /> New Chat
         </button>
 
         <div style={styles.tabRow}>
@@ -476,15 +493,19 @@ export const ChatPage: React.FC = () => {
                   <div style={styles.convItemSub}>{c.modelId}</div>
                 </div>
                 <div style={styles.convActions}>
-                  <button title="Rename" style={styles.iconBtn} onClick={(e) => renameConv(c.id, e)}>✎</button>
+                  <button title="Rename" style={styles.iconBtn} onClick={(e) => renameConv(c.id, e)}>
+                    <Pencil size={13} aria-hidden="true" />
+                  </button>
                   <button
                     title={c.archived ? "Unarchive" : "Archive"}
                     style={styles.iconBtn}
                     onClick={(e) => toggleArchive(c.id, e)}
                   >
-                    {c.archived ? "⇤" : "🗄"}
+                    {c.archived ? <ArchiveRestore size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
                   </button>
-                  <button title="Delete" style={styles.iconBtn} onClick={(e) => deleteConv(c.id, e)}>🗑</button>
+                  <button title="Delete" style={styles.iconBtn} onClick={(e) => deleteConv(c.id, e)}>
+                    <Trash2 size={13} aria-hidden="true" />
+                  </button>
                 </div>
               </div>
             ))
@@ -511,7 +532,7 @@ export const ChatPage: React.FC = () => {
                 onClick={() => setPoolExpanded((v) => !v)}
                 title="This response is computed across multiple devices"
               >
-                🔗 {pool!.node_count} devices
+                <Link2 size={13} aria-hidden="true" /> {pool!.node_count} devices
               </span>
             )}
           </div>
@@ -539,7 +560,7 @@ export const ChatPage: React.FC = () => {
               disabled={!selectedModel}
               style={styles.copyModelBtn}
             >
-              {copiedModel ? "✓" : "⧉"}
+              {copiedModel ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
             </button>
           </div>
         </div>
@@ -565,13 +586,13 @@ export const ChatPage: React.FC = () => {
         <div style={styles.messageArea}>
           {!activeConv ? (
             <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>💬</div>
+              <MessageSquare style={styles.emptyIcon} size={48} aria-hidden="true" />
               <h2>Select a Conversation to Start Chatting</h2>
-              <p>Or click "+ New Chat" in the sidebar to load the optimizer config.</p>
+              <p>Or click New Chat in the sidebar to load the optimizer config.</p>
             </div>
           ) : activeConv.messages.length === 0 ? (
             <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>🤖</div>
+              <Bot style={styles.emptyIcon} size={48} aria-hidden="true" />
               <h2>Localy Server Ready</h2>
               <p>Type a message below. Localy will automatically tune threads and compute fits.</p>
             </div>
@@ -617,7 +638,7 @@ export const ChatPage: React.FC = () => {
                                 {parsed.files.length > 0 && (
                                   <div style={styles.attachChipRow}>
                                     {parsed.files.map((f, i) => (
-                                      <span key={i} style={styles.attachChipSent}>📎 {f}</span>
+                                      <span key={i} style={styles.attachChipSent}><Paperclip size={12} aria-hidden="true" /> {f}</span>
                                     ))}
                                   </div>
                                 )}
@@ -654,9 +675,11 @@ export const ChatPage: React.FC = () => {
             <div style={styles.stagedRow}>
               {attachments.map((a, i) => (
                 <span key={i} style={styles.stagedChip}>
-                  📎 {a.name}
+                  <Paperclip size={12} aria-hidden="true" /> {a.name}
                   {a.truncated && <span style={styles.truncTag} title="Truncated to fit context"> (trimmed)</span>}
-                  <button type="button" style={styles.chipX} onClick={() => removeAttachment(i)}>×</button>
+                  <button type="button" style={styles.chipX} onClick={() => removeAttachment(i)}>
+                    <X size={12} aria-hidden="true" />
+                  </button>
                 </span>
               ))}
               {attaching && <span style={styles.stagedChipMuted}>Extracting…</span>}
@@ -668,7 +691,9 @@ export const ChatPage: React.FC = () => {
               {images.map((im, i) => (
                 <span key={i} style={styles.imageChip}>
                   <img src={im.dataUrl} alt={im.name} style={styles.thumb} />
-                  <button type="button" style={styles.chipX} onClick={() => removeImage(i)}>×</button>
+                  <button type="button" style={styles.chipX} onClick={() => removeImage(i)}>
+                    <X size={12} aria-hidden="true" />
+                  </button>
                 </span>
               ))}
             </div>
@@ -697,7 +722,7 @@ export const ChatPage: React.FC = () => {
               disabled={generating || !activeConvId || attaching}
               style={styles.attachBtn}
             >
-              📎
+              <FileText size={18} aria-hidden="true" />
             </button>
             {visionModel && (
               <button
@@ -707,7 +732,7 @@ export const ChatPage: React.FC = () => {
                 disabled={generating || !activeConvId}
                 style={styles.attachBtn}
               >
-                🖼
+                <ImageIcon size={18} aria-hidden="true" />
               </button>
             )}
             <input
@@ -720,7 +745,7 @@ export const ChatPage: React.FC = () => {
             />
             {generating ? (
               <button type="button" className="btn" onClick={stopGeneration} style={styles.stopBtn}>
-                ■ Stop
+                <Square size={13} aria-hidden="true" /> Stop
               </button>
             ) : (
               <button
@@ -759,7 +784,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     background: "rgba(10, 10, 15, 0.4)",
     flexShrink: 0,
   },
-  newChatBtn: { width: "100%", padding: "12px", marginBottom: "14px", fontWeight: "600" },
+  newChatBtn: { width: "100%", padding: "12px", marginBottom: "14px", fontWeight: "600", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" },
   tabRow: { display: "flex", gap: "6px", marginBottom: "14px" },
   tabBtn: {
     flex: 1,
@@ -796,12 +821,17 @@ const styles: { [key: string]: React.CSSProperties } = {
   convItemSub: { fontSize: "11px", color: "#71717a", marginTop: "4px" },
   convActions: { display: "flex", gap: "2px", flexShrink: 0 },
   iconBtn: {
+    width: "22px",
+    height: "22px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
     background: "transparent",
     border: "none",
     color: "#71717a",
     cursor: "pointer",
     fontSize: "12px",
-    padding: "2px 4px",
+    padding: 0,
     borderRadius: "4px",
     lineHeight: 1,
   },
@@ -858,12 +888,20 @@ const styles: { [key: string]: React.CSSProperties } = {
     color: "#4ade80",
     padding: "3px 8px",
     cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
   },
   modelSelectorWrapper: { display: "flex", alignItems: "center", gap: "8px" },
   selectorLabel: { fontSize: "12px", color: "#71717a" },
   modelSelect: { padding: "6px 12px", fontSize: "13px", minWidth: "160px" },
   copyModelBtn: {
-    padding: "6px 10px",
+    width: "32px",
+    height: "32px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 0,
     fontSize: "13px",
     background: "transparent",
     color: "#a1a1aa",
@@ -873,7 +911,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   messageArea: { flexGrow: 1, overflowY: "auto", padding: "30px 24px", display: "flex", flexDirection: "column" },
   emptyState: { margin: "auto", textAlign: "center", maxWidth: "360px" },
-  emptyIcon: { fontSize: "48px", marginBottom: "16px" },
+  emptyIcon: { margin: "0 auto 16px", color: "#818cf8" },
   messageList: { display: "flex", flexDirection: "column", gap: "20px", width: "100%", maxWidth: "800px", margin: "0 auto" },
   messageRow: { display: "flex", width: "100%" },
   messageBubble: { maxWidth: "85%", borderRadius: "12px", padding: "16px 20px", boxShadow: "0 4px 12px rgba(0,0,0,0.15)" },
@@ -885,12 +923,12 @@ const styles: { [key: string]: React.CSSProperties } = {
   stagedChip: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "#c7d2fe", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)", borderRadius: "6px", padding: "3px 8px" },
   stagedChipMuted: { fontSize: "12px", color: "#a1a1aa", fontStyle: "italic", alignSelf: "center" },
   truncTag: { color: "#fbbf24" },
-  chipX: { background: "transparent", border: "none", color: "#a5b4fc", cursor: "pointer", fontSize: "14px", lineHeight: 1, padding: "0 0 0 2px" },
+  chipX: { background: "transparent", border: "none", color: "#a5b4fc", cursor: "pointer", lineHeight: 1, padding: "0 0 0 2px", display: "inline-flex", alignItems: "center" },
   imageChip: { position: "relative", display: "inline-flex", alignItems: "center" },
   thumb: { width: "48px", height: "48px", objectFit: "cover", borderRadius: "6px", border: "1px solid var(--panel-border)" },
   attachChipRow: { display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" },
-  attachChipSent: { fontSize: "11px", color: "#e0e7ff", background: "rgba(255,255,255,0.12)", borderRadius: "5px", padding: "2px 7px" },
-  attachBtn: { padding: "0 14px", fontSize: "18px", background: "transparent", color: "#a1a1aa", border: "1px solid var(--panel-border)", borderRadius: "8px", cursor: "pointer" },
+  attachChipSent: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#e0e7ff", background: "rgba(255,255,255,0.12)", borderRadius: "5px", padding: "2px 7px" },
+  attachBtn: { width: "42px", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, background: "transparent", color: "#a1a1aa", border: "1px solid var(--panel-border)", borderRadius: "8px", cursor: "pointer" },
   inputForm: { display: "flex", gap: "12px", width: "100%", maxWidth: "800px", margin: "0 auto" },
   textInput: { flexGrow: 1, padding: "12px 16px", fontSize: "14px" },
   sendBtn: { padding: "0 24px", fontSize: "14px" },
@@ -900,5 +938,8 @@ const styles: { [key: string]: React.CSSProperties } = {
     background: "rgba(239, 68, 68, 0.15)",
     border: "1px solid rgba(239, 68, 68, 0.4)",
     color: "#f87171",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
   },
 };

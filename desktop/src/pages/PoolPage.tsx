@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { api } from "../api/endpoints";
 import { PoolStatus, ShardPlan, DiscoveredWorker, RegistryModel } from "../api/types";
 import { DeviceContribution } from "../components/DeviceContribution";
+import { Activity, CheckCircle2, Handshake, Search, X, XCircle } from "lucide-react";
 
 interface LocalModelOption {
   id: string;
@@ -255,7 +256,7 @@ export const PoolPage: React.FC = () => {
           <div style={styles.cardTitle}>
             Pool Status
             {status?.pooled_active && (
-              <span style={styles.activeBadge}>● Serving {status.active_model}</span>
+              <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Serving {status.active_model}</span>
             )}
           </div>
           {status ? (
@@ -300,7 +301,7 @@ export const PoolPage: React.FC = () => {
           <div style={styles.card} className="glass-panel">
             <div style={styles.cardTitle}>
               Live Contribution
-              <span style={styles.activeBadge}>● Who computes what</span>
+              <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Who computes what</span>
             </div>
             <DeviceContribution plan={livePlan} status={status} />
           </div>
@@ -310,7 +311,7 @@ export const PoolPage: React.FC = () => {
         <div style={styles.card} className="glass-panel">
           <div style={styles.cardTitle}>
             Share This Device
-            {status?.worker_running && <span style={styles.activeBadge}>● Sharing</span>}
+            {status?.worker_running && <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Sharing</span>}
           </div>
           <p style={styles.shareText}>
             Let other Localy devices on this network borrow this machine's memory/CPU.
@@ -325,7 +326,7 @@ export const PoolPage: React.FC = () => {
               ? "…"
               : status?.worker_running
               ? "Stop sharing"
-              : "🤝 Share this device"}
+              : <><Handshake size={16} aria-hidden="true" /> Share this device</>}
           </button>
         </div>
 
@@ -334,7 +335,7 @@ export const PoolPage: React.FC = () => {
           <div style={styles.cardTitle}>Add Devices</div>
           <div style={styles.rowGap}>
             <button className="btn btn-primary" onClick={discover} disabled={busy === "discover"}>
-              {busy === "discover" ? "Scanning…" : "🔍 Scan WiFi/Hotspot"}
+              {busy === "discover" ? "Scanning…" : <><Search size={16} aria-hidden="true" /> Scan WiFi/Hotspot</>}
             </button>
             <input
               style={styles.addrInput}
@@ -364,7 +365,7 @@ export const PoolPage: React.FC = () => {
                         </div>
                       </div>
                       {inPool ? (
-                        <span style={styles.joinedTag}>✓ in pool</span>
+                        <span style={styles.joinedTag}><CheckCircle2 size={13} aria-hidden="true" /> in pool</span>
                       ) : (
                         <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label, w.budget_gb, w.metrics_port)}>
                           Join
@@ -516,7 +517,7 @@ export const PoolPage: React.FC = () => {
                 {load?.last_log && <div style={styles.logLine}>{load.last_log}</div>}
                 <div style={styles.loadingActions}>
                   <button className="btn btn-secondary" style={styles.smBtn} onClick={stopPooled} disabled={busy === "stop"}>
-                    {busy === "stop" ? "Cancelling…" : "✕ Cancel load"}
+                    {busy === "stop" ? "Cancelling…" : <><X size={14} aria-hidden="true" /> Cancel load</>}
                   </button>
                   <span style={styles.loadingHint}>You can switch tabs or close the window (background mode) — loading continues on the server.</span>
                 </div>
@@ -533,7 +534,7 @@ export const PoolPage: React.FC = () => {
 
           {status?.pooled_active && (
             <div style={styles.successBanner}>
-              ✅ <b>{status.active_model}</b> is now serving across the pool. Open the <b>Chat</b> tab and select
+              <CheckCircle2 size={16} aria-hidden="true" /> <b>{status.active_model}</b> is now serving across the pool. Open the <b>Chat</b> tab and select
               this model to use it — requests route to the pool automatically.
             </div>
           )}
@@ -541,7 +542,9 @@ export const PoolPage: React.FC = () => {
           {plan && (
             <div style={{ ...styles.planBox, borderColor: plan.fits ? "var(--semantic-success)" : "var(--semantic-error)" }}>
               <div style={{ ...styles.fitBadge, color: plan.fits ? "var(--semantic-success)" : "var(--semantic-error)" }}>
-                {plan.fits ? "✅ Fits across the pool" : "❌ Does not fit"}
+                {plan.fits
+                  ? <><CheckCircle2 size={14} aria-hidden="true" /> Fits across the pool</>
+                  : <><XCircle size={14} aria-hidden="true" /> Does not fit</>}
               </div>
               <p style={styles.planReason}>{plan.reason}</p>
               {plan.nodes.length > 0 && (
@@ -582,7 +585,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   errorBox: { background: "var(--semantic-error-bg)", border: "1px solid var(--semantic-error)", color: "#fca5a5", padding: "10px 14px", borderRadius: "8px", fontSize: "13px" },
   card: { borderRadius: "12px", padding: "20px 22px" },
   cardTitle: { fontSize: "15px", fontWeight: 600, color: "#fff", marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between" },
-  activeBadge: { fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
+  activeBadge: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
   statRow: { display: "flex", justifyContent: "space-between", fontSize: "13px", color: "#a1a1aa", marginBottom: "12px" },
   nodeList: { display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" },
   node: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px" },
@@ -599,11 +602,11 @@ const styles: { [key: string]: React.CSSProperties } = {
   hint: { fontSize: "12px", color: "#71717a", marginTop: "12px", lineHeight: 1.5 },
   shareText: { fontSize: "13px", color: "#a1a1aa", marginBottom: "14px", lineHeight: 1.5 },
   scanResult: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "14px", fontSize: "13px", color: "#e4e4e7", fontWeight: 500 },
-  joinedTag: { fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
+  joinedTag: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
   emptyScan: { marginTop: "14px", padding: "12px 14px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px", fontSize: "12px", color: "#a1a1aa", lineHeight: 1.6 },
   muted: { fontSize: "13px", color: "#71717a" },
   planBox: { marginTop: "16px", padding: "16px", borderRadius: "10px", border: "1px solid", background: "rgba(255,255,255,0.02)" },
-  fitBadge: { fontSize: "13px", fontWeight: 600, marginBottom: "8px" },
+  fitBadge: { display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 600, marginBottom: "8px" },
   planReason: { fontSize: "13px", color: "#d4d4d8", marginBottom: "12px", lineHeight: 1.5 },
   splitBars: { display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" },
   splitRow: { display: "flex", alignItems: "center", gap: "10px" },
@@ -657,6 +660,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   errorDetail: { marginTop: "6px", fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap", color: "#f0a0a0", maxHeight: "140px", overflowY: "auto" },
   successBanner: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
     marginTop: "16px",
     padding: "14px 16px",
     borderRadius: "10px",

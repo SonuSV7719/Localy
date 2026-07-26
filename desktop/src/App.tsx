@@ -7,6 +7,7 @@ import { OperationsPage } from "./pages/OperationsPage";
 import { ApiAccessPage } from "./pages/ApiAccessPage";
 import { SettingsPage, syncBackgroundSetting } from "./pages/SettingsPage";
 import { api } from "./api/endpoints";
+import { BarChart3, Cable, FolderOpen, MessageSquare, Network, Settings as SettingsIcon } from "lucide-react";
 
 function App() {
   const [setupCompleted, setSetupCompleted] = useState<boolean>(false);
@@ -133,7 +134,7 @@ function App() {
               color: activeTab === "chat" ? "#fff" : "var(--text-secondary)"
             }}
           >
-            <span style={styles.menuIcon}>💬</span> Chat Playground
+            <MessageSquare style={styles.menuIcon} size={16} aria-hidden="true" /> Chat Playground
           </div>
 
           <div
@@ -144,7 +145,7 @@ function App() {
               color: activeTab === "models" ? "#fff" : "var(--text-secondary)"
             }}
           >
-            <span style={styles.menuIcon}>📁</span> Model Catalog
+            <FolderOpen style={styles.menuIcon} size={16} aria-hidden="true" /> Model Catalog
           </div>
 
           <div
@@ -155,11 +156,11 @@ function App() {
               color: activeTab === "pool" ? "#fff" : "var(--text-secondary)"
             }}
           >
-            <span style={styles.menuIcon}>🔗</span> Device Pool
+            <Network style={styles.menuIcon} size={16} aria-hidden="true" /> Device Pool
           </div>
 
           <div onClick={() => setActiveTab("operations")} style={{ ...styles.menuItem, background: activeTab === "operations" ? "rgba(99, 102, 241, 0.1)" : "transparent", color: activeTab === "operations" ? "#fff" : "var(--text-secondary)" }}>
-            <span style={styles.menuIcon}>&#128202;</span> Pool Operations
+            <BarChart3 style={styles.menuIcon} size={16} aria-hidden="true" /> Pool Operations
           </div>
 
           <div
@@ -170,7 +171,7 @@ function App() {
               color: activeTab === "api" ? "#fff" : "var(--text-secondary)"
             }}
           >
-            <span style={styles.menuIcon}>🔌</span> API Access
+            <Cable style={styles.menuIcon} size={16} aria-hidden="true" /> API Access
           </div>
 
           <div
@@ -181,7 +182,7 @@ function App() {
               color: activeTab === "settings" ? "#fff" : "var(--text-secondary)"
             }}
           >
-            <span style={styles.menuIcon}>⚙️</span> Settings
+            <SettingsIcon style={styles.menuIcon} size={16} aria-hidden="true" /> Settings
           </div>
         </div>
 
@@ -273,7 +274,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     transition: "all 0.15s ease-out"
   },
   menuIcon: {
-    fontSize: "16px"
+    width: "16px",
+    height: "16px",
+    flexShrink: 0
   },
   bottomStatus: {
     marginTop: "auto",
