@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { api } from "../api/endpoints";
 import { AccessInfo } from "../api/types";
+import { Activity, AlertTriangle, Check, Copy, Globe2, Plus } from "lucide-react";
 
 export const ApiAccessPage: React.FC = () => {
   const [info, setInfo] = useState<AccessInfo | null>(null);
@@ -99,7 +100,7 @@ export const ApiAccessPage: React.FC = () => {
         <div style={styles.card} className="glass-panel">
           <div style={styles.cardTitle}>
             Internet Access
-            {info?.tunnel.running && <span style={styles.activeBadge}>● Live</span>}
+            {info?.tunnel.running && <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Live</span>}
           </div>
           <p style={styles.sub2}>
             Expose your API to the internet via a Cloudflare tunnel — share the URL + a key with
@@ -115,7 +116,7 @@ export const ApiAccessPage: React.FC = () => {
             disabled={busy === "tunnel"}
             style={{ marginTop: "12px" }}
           >
-            {busy === "tunnel" ? "…" : info?.tunnel.running ? "Stop internet access" : "🌐 Expose to the internet"}
+            {busy === "tunnel" ? "…" : info?.tunnel.running ? "Stop internet access" : <><Globe2 size={16} aria-hidden="true" /> Expose to the internet</>}
           </button>
         </div>
 
@@ -125,17 +126,17 @@ export const ApiAccessPage: React.FC = () => {
           <div style={styles.rowGap}>
             <input style={styles.input} placeholder="Key label (e.g. Alex's laptop)" value={label} onChange={(e) => setLabel(e.target.value)} />
             <button className="btn btn-primary" onClick={genKey} disabled={busy === "key"}>
-              {busy === "key" ? "…" : "+ Generate key"}
+              {busy === "key" ? "…" : <><Plus size={16} aria-hidden="true" /> Generate key</>}
             </button>
           </div>
 
           {newKey && (
             <div style={styles.newKeyBox}>
-              <div style={styles.newKeyWarn}>⚠ Copy this key now — it won't be shown again.</div>
+              <div style={styles.newKeyWarn}><AlertTriangle size={14} aria-hidden="true" /> Copy this key now — it won't be shown again.</div>
               <div style={styles.newKeyRow}>
                 <code style={styles.newKeyCode}>{newKey}</code>
                 <button className="btn btn-secondary" style={styles.copyBtn} onClick={() => copy(newKey, "new")}>
-                  {copied === "new" ? "Copied ✓" : "Copy"}
+                  {copied === "new" ? <><Check size={14} aria-hidden="true" /> Copied</> : <><Copy size={14} aria-hidden="true" /> Copy</>}
                 </button>
               </div>
             </div>
@@ -160,7 +161,7 @@ export const ApiAccessPage: React.FC = () => {
           <div style={styles.cardTitle}>Example request</div>
           <pre style={styles.code}>{curl}</pre>
           <button className="btn btn-secondary" style={styles.copyBtn} onClick={() => copy(curl, "curl")}>
-            {copied === "curl" ? "Copied ✓" : "Copy"}
+            {copied === "curl" ? <><Check size={14} aria-hidden="true" /> Copied</> : <><Copy size={14} aria-hidden="true" /> Copy</>}
           </button>
         </div>
       </div>
@@ -172,7 +173,9 @@ const Row: React.FC<{ label: string; value: string; onCopy: () => void; copied: 
   <div style={styles.urlRow}>
     <span style={styles.urlLabel}>{label}</span>
     <code style={styles.urlValue}>{value}</code>
-    <button className="btn btn-secondary" style={styles.copyBtn} onClick={onCopy}>{copied ? "Copied ✓" : "Copy"}</button>
+    <button className="btn btn-secondary" style={styles.copyBtn} onClick={onCopy}>
+      {copied ? <><Check size={14} aria-hidden="true" /> Copied</> : <><Copy size={14} aria-hidden="true" /> Copy</>}
+    </button>
   </div>
 );
 
@@ -186,14 +189,14 @@ const styles: { [key: string]: React.CSSProperties } = {
   errorBox: { background: "var(--semantic-error-bg)", border: "1px solid var(--semantic-error)", color: "#fca5a5", padding: "10px 14px", borderRadius: "8px", fontSize: "13px" },
   card: { borderRadius: "12px", padding: "20px 22px" },
   cardTitle: { fontSize: "15px", fontWeight: 600, color: "#fff", marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between" },
-  activeBadge: { fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
+  activeBadge: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
   urlRow: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" },
   urlLabel: { fontSize: "12px", color: "#71717a", width: "160px", flexShrink: 0 },
   urlValue: { flexGrow: 1, fontSize: "12px", color: "#e4e4e7", fontFamily: "'JetBrains Mono', monospace", background: "rgba(255,255,255,0.03)", padding: "6px 10px", borderRadius: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   rowGap: { display: "flex", gap: "10px", alignItems: "center" },
   input: { flexGrow: 1, fontSize: "13px" },
   newKeyBox: { marginTop: "14px", padding: "14px", background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.3)", borderRadius: "8px" },
-  newKeyWarn: { fontSize: "12px", color: "#c4b5fd", marginBottom: "8px" },
+  newKeyWarn: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#c4b5fd", marginBottom: "8px" },
   newKeyRow: { display: "flex", alignItems: "center", gap: "10px" },
   newKeyCode: { flexGrow: 1, fontSize: "13px", color: "#fff", fontFamily: "'JetBrains Mono', monospace", wordBreak: "break-all" },
   keyList: { display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" },

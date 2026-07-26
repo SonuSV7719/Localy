@@ -166,7 +166,7 @@ POOL_HEALTH_CHECK_INTERVAL_SECONDS = 10
 # (a couple of missed probes) so a reachable worker is never dropped between
 # probes — the old 30s value with no heartbeat meant every worker was pruned
 # ~30s after joining.
-POOL_STALE_THRESHOLD_SECONDS = 45
+POOL_STALE_THRESHOLD_SECONDS = 300
 # TCP-connect timeout for a single liveness probe.
 POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS = 2.0
 

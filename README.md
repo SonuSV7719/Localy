@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="desktop/src-tauri/icons/128x128.png" alt="Localy logo" width="96" />
+
 # Localy
 
 **Run open-source LLMs on your own devices — auto-tuned, honest about what fits, and poolable across machines.**

@@ -52,6 +52,10 @@ pub fn start_sidecar(app: &AppHandle) {
     if let Some(dir) = &rpc_dir {
         cmd.env("LOCALY_LLAMA_BIN_DIR", dir);
     }
+    // The desktop app exposes pool controls as a first-class feature. Enable
+    // transparent /v1 chat proxying to a ready pooled coordinator in packaged
+    // builds so "Run pooled" actually serves that model from Chat.
+    cmd.env("LOCALY_POOL_ENABLED", "true");
     // Run from the backend folder so it finds its _internal deps.
     if let Some(parent) = backend_exe.parent() {
         cmd.current_dir(parent);

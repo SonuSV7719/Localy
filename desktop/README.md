@@ -1,13 +1,13 @@
 # Localy Desktop (Phase 2)
 
 Tauri v2 + React + TypeScript desktop app for Localy. Provides the onboarding
-wizard (hardware scan → recommended model → first-run benchmark), a streaming
-chat playground, and a model catalog with **live hardware-fit labels**.
+wizard, a streaming chat playground, and a model catalog with live hardware-fit
+labels.
 
 The UI talks to the Localy backend REST API on `http://127.0.0.1:11434`
 (OpenAI + Ollama compatible).
 
-## Run it (dev mode — no Rust/installer needed)
+## Run it (dev mode, no Rust/installer needed)
 
 Two terminals:
 
@@ -34,24 +34,31 @@ npm run tauri dev
 ```
 
 This opens the app in a native window. In dev mode it does **not** bundle the
-Python backend — keep `uv run localy serve` running in a separate terminal
-(the sidecar spawn is intentionally non-fatal when the bundled binary is
-absent). For a fully self-contained installer, the backend must first be
-compiled to `src-tauri/binaries/localy-backend` (e.g. with PyInstaller) so
-Tauri can ship it as a sidecar — that packaging step is not yet wired up.
+Python backend; keep `uv run localy serve` running in a separate terminal. The
+sidecar spawn is intentionally non-fatal when the bundled binary is absent.
+
+For a fully self-contained installer, run:
+
+```powershell
+../scripts/build.ps1
+```
+
+That packages the PyInstaller backend into `src-tauri/resources/backend`, which
+is the resource path launched by the Tauri shell at runtime.
 
 ## What to test
 
-1. **Onboarding** — "Start Hardware Scan" shows your real CPU/RAM/GPU profile.
-2. **Model Catalog** — 8 models with live fit badges (7B → "Fits Well",
-   14B → "Tight Fit" with recommendations). Download a small one
-   (SmolLM2, ~1 GB) to try chat.
-3. **Chat** — pick a downloaded model, send a message, watch it stream with a
-   live tok/s readout.
+1. **Onboarding** - "Start Hardware Scan" shows your real CPU/RAM/GPU profile.
+2. **Model Catalog** - live fit badges and recommendations update from backend
+   hardware-fit data. Download a small model such as SmolLM2 to try chat.
+3. **Chat** - pick a downloaded model, send a message, and watch the stream with
+   the live token readout.
+4. **Pool** - join worker devices, run pooled loading, and verify Operations
+   shows online/reconnecting nodes plus transfer speed and ETA.
 
 ## Structure
 
-```
+```text
 src/
   api/         client.ts (fetch + SSE/NDJSON streaming), endpoints.ts, types.ts
   pages/       SetupPage, ChatPage, ModelsPage

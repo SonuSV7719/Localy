@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from localy.core.constants import REGISTRY_FILENAME, QuantizationType
+from localy.core.constants import REGISTRY_FILENAME
 from localy.core.exceptions import ModelNotFoundError
 from localy.core.logging import get_logger
 
@@ -446,37 +446,40 @@ class ModelRegistry:
             ModelNotFoundError: If model or variant not found.
         """
         spec = model_spec.strip().lower()
-        quant_override = None
-
-        # Check for quant suffix: "model:8b-q4_k_m" → split off "-q4_k_m"
-        for quant_type in QuantizationType:
-            suffix = f"-{quant_type.value.lower()}"
-            if spec.endswith(suffix):
-                quant_override = quant_type.value
-                spec = spec[: -len(suffix)]
-                break
+        def _split_registered_quant(candidate: str, entry: ModelEntry) -> tuple[str, str | None]:
+            # Dynamic Hugging Face models can expose quants outside our built-in
+            # enum (for example IQ3_M). Split against the entry's actual variants
+            # so every catalog variant can be addressed from chat/API.
+            for quant in sorted(entry.variants.keys(), key=len, reverse=True):
+                suffix = f"-{quant.lower()}"
+                if candidate.endswith(suffix):
+                    return candidate[: -len(suffix)], quant
+            return candidate, None
 
         # Try exact match first
         for model_id, entry in self._models.items():
-            if model_id.lower() == spec or entry.name.lower() == spec:
+            base_spec, quant_override = _split_registered_quant(spec, entry)
+            if model_id.lower() == base_spec or entry.name.lower() == base_spec:
                 variant = entry.get_variant(quant_override)
                 return entry, variant
 
         # Try partial match (name without size)
         matches = [
             entry for entry in self._models.values()
-            if entry.name.lower() == spec.split(":")[0]
+            if entry.name.lower() == _split_registered_quant(spec, entry)[0].split(":")[0]
         ]
 
         if matches:
             # Return the best match (prefer specified size, else first)
             if ":" in spec:
-                size_spec = spec.split(":")[1]
+                size_spec = spec.split(":")[1].split("-", 1)[0]
                 for m in matches:
+                    _base_spec, quant_override = _split_registered_quant(spec, m)
                     if size_spec in m.full_id.lower():
                         return m, m.get_variant(quant_override)
 
             entry = matches[0]
+            _base_spec, quant_override = _split_registered_quant(spec, entry)
             return entry, entry.get_variant(quant_override)
 
         # Not found

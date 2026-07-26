@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-25
+
 ### Added
 
 - **Vision (images) — backend foundation.** The API now accepts OpenAI-style multimodal message content (text + `image_url` parts); the engine loads a vision chat handler when a model ships an `mmproj` projector (Qwen2.5-VL, LLaVA, MiniCPM-V, Moondream, …), and text-only models safely flatten image parts to a placeholder. Models are flagged `supports_vision` so clients can gate an image button. (Image UI in the desktop/mobile chat and end-to-end verification with a real vision model are the next step.)
@@ -43,5 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Device pooling over LAN or hotspot to combine multiple machines for a single model.
 - OpenAI- and Ollama-compatible API with API keys and optional Cloudflare tunnel for remote access.
 
-[Unreleased]: https://github.com/SonuSV7719/Localy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/SonuSV7719/Localy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/SonuSV7719/Localy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/SonuSV7719/Localy/releases/tag/v0.1.0

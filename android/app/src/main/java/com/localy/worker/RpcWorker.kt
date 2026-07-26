@@ -3,6 +3,7 @@ package com.localy.worker
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Runs the bundled ggml-rpc-server (packaged as libggml-rpc-server.so) as a
@@ -52,13 +53,18 @@ class RpcWorker(private val context: Context) {
 
             // Drain output to logcat so we can diagnose issues.
             Thread {
-                proc.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { Log.i(TAG, "[rpc] $it") }
+                try {
+                    proc.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { Log.i(TAG, "[rpc] $it") }
+                    }
+                } catch (_: Exception) {
+                    // Expected when stop() closes the process stream during
+                    // shutdown or failed startup.
                 }
             }.apply { isDaemon = true }.start()
 
             // Give it a moment; if it died immediately, report failure.
-            Thread.sleep(800)
+            Thread.sleep(1500)
             if (!proc.isAlive) {
                 lastError = "rpc-server exited immediately (code ${proc.exitValue()})"
                 Log.e(TAG, lastError!!)
@@ -78,11 +84,15 @@ class RpcWorker(private val context: Context) {
         process?.let { p ->
             try {
                 p.destroy()
-                if (p.isAlive) p.destroyForcibly()
+                if (!p.waitFor(1500, TimeUnit.MILLISECONDS) && p.isAlive) {
+                    p.destroyForcibly()
+                    p.waitFor(1500, TimeUnit.MILLISECONDS)
+                }
             } catch (_: Exception) {
             }
         }
         process = null
         Log.i(TAG, "rpc-server stopped")
     }
+
 }

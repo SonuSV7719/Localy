@@ -20,6 +20,7 @@ from localy.core.exceptions import LocalyError
 from localy.core.logging import get_logger, setup_logging
 from localy.core.dependencies import get_hardware_report, get_engine
 from localy.api.router import api_router
+from localy.version import __version__
 
 logger = get_logger(__name__)
 
@@ -92,7 +93,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Localy API Server",
         description="OpenAI & Ollama compatible local LLM serving API",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 

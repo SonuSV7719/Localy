@@ -2,11 +2,17 @@ import React, { useState, useEffect } from "react";
 import { api } from "../api/endpoints";
 import { PoolStatus, ShardPlan, DiscoveredWorker, RegistryModel } from "../api/types";
 import { DeviceContribution } from "../components/DeviceContribution";
+import { Activity, CheckCircle2, Handshake, Search, X, XCircle } from "lucide-react";
+
+interface LocalModelOption {
+  id: string;
+  label: string;
+}
 
 export const PoolPage: React.FC = () => {
   const [status, setStatus] = useState<PoolStatus | null>(null);
   const [discovered, setDiscovered] = useState<DiscoveredWorker[]>([]);
-  const [models, setModels] = useState<RegistryModel[]>([]);
+  const [modelOptions, setModelOptions] = useState<LocalModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [plan, setPlan] = useState<ShardPlan | null>(null);
   const [busy, setBusy] = useState<string>("");
@@ -100,8 +106,24 @@ export const PoolPage: React.FC = () => {
   const loadModels = async () => {
     try {
       const data = await api.getModels();
-      setModels(data);
-      if (data.length && !selectedModel) setSelectedModel(data[0].id);
+      const options = data.flatMap((m: RegistryModel) =>
+        m.variants
+          .filter((v) => v.is_downloaded)
+          .map((v) => {
+            const isDefault = v.quantization === m.default_variant;
+            const id = isDefault ? m.id : `${m.id}-${v.quantization.toLowerCase()}`;
+            return {
+              id,
+              label: `${m.name} (${m.parameter_count_billions.toFixed(1)}B) · ${v.quantization}`,
+            };
+          })
+      );
+      setModelOptions(options);
+      if (options.length) {
+        setSelectedModel((current) => options.some((o) => o.id === current) ? current : options[0].id);
+      } else {
+        setSelectedModel("");
+      }
     } catch {
       /* ignore */
     }
@@ -234,7 +256,7 @@ export const PoolPage: React.FC = () => {
           <div style={styles.cardTitle}>
             Pool Status
             {status?.pooled_active && (
-              <span style={styles.activeBadge}>● Serving {status.active_model}</span>
+              <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Serving {status.active_model}</span>
             )}
           </div>
           {status ? (
@@ -249,10 +271,11 @@ export const PoolPage: React.FC = () => {
                     <div>
                       <span style={styles.nodeLabel}>{n.label}</span>
                       {n.is_local && <span style={styles.localTag}>this device</span>}
+                      {!n.is_local && n.online === false && <span style={styles.offlineTag}>reconnecting</span>}
                       <div style={styles.nodeAddr}>{n.address}</div>
                     </div>
                     <div style={styles.nodeRight}>
-                      <span>~{n.budget_gb.toFixed(1)} GB</span>
+                      <span>{n.online === false ? "offline" : `~${n.budget_gb.toFixed(1)} GB`}</span>
                       {!n.is_local && (
                         <button className="btn btn-secondary" style={styles.smBtn} onClick={() => leave(n.node_id)}>
                           Remove
@@ -278,7 +301,7 @@ export const PoolPage: React.FC = () => {
           <div style={styles.card} className="glass-panel">
             <div style={styles.cardTitle}>
               Live Contribution
-              <span style={styles.activeBadge}>● Who computes what</span>
+              <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Who computes what</span>
             </div>
             <DeviceContribution plan={livePlan} status={status} />
           </div>
@@ -288,7 +311,7 @@ export const PoolPage: React.FC = () => {
         <div style={styles.card} className="glass-panel">
           <div style={styles.cardTitle}>
             Share This Device
-            {status?.worker_running && <span style={styles.activeBadge}>● Sharing</span>}
+            {status?.worker_running && <span style={styles.activeBadge}><Activity size={12} aria-hidden="true" /> Sharing</span>}
           </div>
           <p style={styles.shareText}>
             Let other Localy devices on this network borrow this machine's memory/CPU.
@@ -303,7 +326,7 @@ export const PoolPage: React.FC = () => {
               ? "…"
               : status?.worker_running
               ? "Stop sharing"
-              : "🤝 Share this device"}
+              : <><Handshake size={16} aria-hidden="true" /> Share this device</>}
           </button>
         </div>
 
@@ -312,7 +335,7 @@ export const PoolPage: React.FC = () => {
           <div style={styles.cardTitle}>Add Devices</div>
           <div style={styles.rowGap}>
             <button className="btn btn-primary" onClick={discover} disabled={busy === "discover"}>
-              {busy === "discover" ? "Scanning…" : "🔍 Scan WiFi/Hotspot"}
+              {busy === "discover" ? "Scanning…" : <><Search size={16} aria-hidden="true" /> Scan WiFi/Hotspot</>}
             </button>
             <input
               style={styles.addrInput}
@@ -342,9 +365,9 @@ export const PoolPage: React.FC = () => {
                         </div>
                       </div>
                       {inPool ? (
-                        <span style={styles.joinedTag}>✓ in pool</span>
+                        <span style={styles.joinedTag}><CheckCircle2 size={13} aria-hidden="true" /> in pool</span>
                       ) : (
-                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label, w.budget_gb)}>
+                        <button className="btn btn-primary" style={styles.smBtn} onClick={() => join(w.host, w.port, w.label, w.budget_gb, w.metrics_port)}>
                           Join
                         </button>
                       )}
@@ -377,17 +400,21 @@ export const PoolPage: React.FC = () => {
               onChange={(e) => setSelectedModel(e.target.value)}
               disabled={loadingActive}
             >
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>{m.name} ({m.parameter_count_billions.toFixed(1)}B)</option>
-              ))}
+              {modelOptions.length === 0 ? (
+                <option value="">No downloaded model variants</option>
+              ) : (
+                modelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))
+              )}
             </select>
-            <button className="btn btn-secondary" onClick={checkFit} disabled={busy === "fit" || loadingActive}>
+            <button className="btn btn-secondary" onClick={checkFit} disabled={!selectedModel || busy === "fit" || loadingActive}>
               {busy === "fit" ? "Checking…" : "Check fit"}
             </button>
             <button
               className="btn btn-primary"
               onClick={runPooled}
-              disabled={loadingActive || (!!plan && !plan.fits)}
+              disabled={!selectedModel || loadingActive || (!!plan && !plan.fits)}
             >
               {loadingActive ? "Loading…" : "Run pooled"}
             </button>
@@ -398,11 +425,15 @@ export const PoolPage: React.FC = () => {
             const load = status?.loading;
             const pct = load?.percent ?? null;
             const observed = load?.transfer_measurement === "observed_network";
-            const plannedRemaining = observed && load?.bytes_total != null && load.bytes_sent != null
-              ? Math.max(0, load.bytes_total - load.bytes_sent)
+            const estimated = load?.transfer_measurement === "estimated_from_loader";
+            const hasTransferProgress = (observed || estimated) && load?.bytes_total != null && load.bytes_sent != null;
+            const transferredBytes = hasTransferProgress ? load!.bytes_sent! : null;
+            const totalTransferBytes = hasTransferProgress ? load!.bytes_total! : null;
+            const plannedRemaining = hasTransferProgress
+              ? Math.max(0, totalTransferBytes! - transferredBytes!)
               : null;
-            const transferPct = observed && load?.bytes_total && load.bytes_sent != null
-              ? Math.min(100, (load.bytes_sent / load.bytes_total) * 100)
+            const transferPct = totalTransferBytes && transferredBytes != null
+              ? Math.min(100, (transferredBytes / totalTransferBytes) * 100)
               : null;
             return (
               <div style={styles.loadingBanner}>
@@ -428,7 +459,7 @@ export const PoolPage: React.FC = () => {
 
                 <div style={styles.statGrid}>
                   <div style={styles.stat}><span style={styles.statLabel}>Received by workers</span>
-                    {observed ? fmtBytes(load?.bytes_sent) : "Waiting for telemetry"}
+                    {hasTransferProgress ? fmtBytes(load?.bytes_sent) : "Waiting for telemetry"}
                   </div>
                   <div style={styles.stat}><span style={styles.statLabel}>Planned weight transfer</span>
                     {load?.bytes_total ? fmtBytes(load.bytes_total) : "--"}
@@ -437,9 +468,9 @@ export const PoolPage: React.FC = () => {
                     {plannedRemaining != null ? fmtBytes(plannedRemaining) : "Not measurable yet"}
                   </div>
                   <div style={styles.stat}><span style={styles.statLabel}>Measured speed</span>
-                    {observed ? (load?.speed_bps ? `${fmtBytes(load.speed_bps)}/s` : "Measuring...") : "Unavailable"}
+                    {hasTransferProgress ? (load?.speed_bps ? `${fmtBytes(load.speed_bps)}/s` : "Measuring...") : "Unavailable"}
                   </div>
-                  <div style={styles.stat}><span style={styles.statLabel}>Time left (estimate)</span>{observed ? fmtDuration(load?.eta_s) : "Waiting for transfer"}</div>
+                  <div style={styles.stat}><span style={styles.statLabel}>Time left (estimate)</span>{hasTransferProgress ? fmtDuration(load?.eta_s) : "Waiting for transfer"}</div>
                   <div style={{ display: "none" }}>
                   <div style={styles.stat}><span style={styles.statLabel}>Transferred {pct != null ? "(est.)" : ""}</span>
                     {load?.bytes_total ? `${fmtBytes(load?.bytes_sent)} / ${fmtBytes(load.bytes_total)}` : (pct != null ? `~${pct.toFixed(0)}%` : "working…")}
@@ -461,7 +492,9 @@ export const PoolPage: React.FC = () => {
                   <div style={styles.loadingSub}>
                     {observed
                       ? `Live worker network traffic is being measured. ${fmtBytes(load.bytes_total)} is the planned weight allocation; protocol overhead and a warm worker cache can make it differ from received bytes.`
-                      : "This worker has not provided transfer telemetry yet. The loader phase is shown above, but no transferred bytes or ETA are invented from it."}
+                      : estimated
+                        ? `No worker byte counter is available, so progress is estimated from llama.cpp load phases. ${fmtBytes(load.bytes_total)} is the planned weight allocation.`
+                        : "This worker has not provided transfer telemetry yet. The loader phase is shown above while Localy waits for measurable progress."}
                   </div>
                   <div style={{ ...styles.loadingSub, display: "none" }}>
                     ~{fmtBytes(load.bytes_total)} of weights stream to {load?.remote_count || 1} worker device(s) over
@@ -484,7 +517,7 @@ export const PoolPage: React.FC = () => {
                 {load?.last_log && <div style={styles.logLine}>{load.last_log}</div>}
                 <div style={styles.loadingActions}>
                   <button className="btn btn-secondary" style={styles.smBtn} onClick={stopPooled} disabled={busy === "stop"}>
-                    {busy === "stop" ? "Cancelling…" : "✕ Cancel load"}
+                    {busy === "stop" ? "Cancelling…" : <><X size={14} aria-hidden="true" /> Cancel load</>}
                   </button>
                   <span style={styles.loadingHint}>You can switch tabs or close the window (background mode) — loading continues on the server.</span>
                 </div>
@@ -501,7 +534,7 @@ export const PoolPage: React.FC = () => {
 
           {status?.pooled_active && (
             <div style={styles.successBanner}>
-              ✅ <b>{status.active_model}</b> is now serving across the pool. Open the <b>Chat</b> tab and select
+              <CheckCircle2 size={16} aria-hidden="true" /> <b>{status.active_model}</b> is now serving across the pool. Open the <b>Chat</b> tab and select
               this model to use it — requests route to the pool automatically.
             </div>
           )}
@@ -509,7 +542,9 @@ export const PoolPage: React.FC = () => {
           {plan && (
             <div style={{ ...styles.planBox, borderColor: plan.fits ? "var(--semantic-success)" : "var(--semantic-error)" }}>
               <div style={{ ...styles.fitBadge, color: plan.fits ? "var(--semantic-success)" : "var(--semantic-error)" }}>
-                {plan.fits ? "✅ Fits across the pool" : "❌ Does not fit"}
+                {plan.fits
+                  ? <><CheckCircle2 size={14} aria-hidden="true" /> Fits across the pool</>
+                  : <><XCircle size={14} aria-hidden="true" /> Does not fit</>}
               </div>
               <p style={styles.planReason}>{plan.reason}</p>
               {plan.nodes.length > 0 && (
@@ -550,12 +585,13 @@ const styles: { [key: string]: React.CSSProperties } = {
   errorBox: { background: "var(--semantic-error-bg)", border: "1px solid var(--semantic-error)", color: "#fca5a5", padding: "10px 14px", borderRadius: "8px", fontSize: "13px" },
   card: { borderRadius: "12px", padding: "20px 22px" },
   cardTitle: { fontSize: "15px", fontWeight: 600, color: "#fff", marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between" },
-  activeBadge: { fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
+  activeBadge: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
   statRow: { display: "flex", justifyContent: "space-between", fontSize: "13px", color: "#a1a1aa", marginBottom: "12px" },
   nodeList: { display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" },
   node: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px" },
   nodeLabel: { fontSize: "13px", fontWeight: 500, color: "#e4e4e7" },
   localTag: { fontSize: "10px", color: "#818cf8", marginLeft: "8px", textTransform: "uppercase" },
+  offlineTag: { fontSize: "10px", color: "#fbbf24", marginLeft: "8px", textTransform: "uppercase" },
   nodeAddr: { fontSize: "11px", color: "#71717a", marginTop: "2px", fontFamily: "monospace" },
   nodeRight: { display: "flex", alignItems: "center", gap: "12px", fontSize: "12px", color: "#a1a1aa" },
   smBtn: { fontSize: "12px", padding: "5px 12px" },
@@ -566,11 +602,11 @@ const styles: { [key: string]: React.CSSProperties } = {
   hint: { fontSize: "12px", color: "#71717a", marginTop: "12px", lineHeight: 1.5 },
   shareText: { fontSize: "13px", color: "#a1a1aa", marginBottom: "14px", lineHeight: 1.5 },
   scanResult: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "14px", fontSize: "13px", color: "#e4e4e7", fontWeight: 500 },
-  joinedTag: { fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
+  joinedTag: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--semantic-success)", fontWeight: 500 },
   emptyScan: { marginTop: "14px", padding: "12px 14px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px", fontSize: "12px", color: "#a1a1aa", lineHeight: 1.6 },
   muted: { fontSize: "13px", color: "#71717a" },
   planBox: { marginTop: "16px", padding: "16px", borderRadius: "10px", border: "1px solid", background: "rgba(255,255,255,0.02)" },
-  fitBadge: { fontSize: "13px", fontWeight: 600, marginBottom: "8px" },
+  fitBadge: { display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: 600, marginBottom: "8px" },
   planReason: { fontSize: "13px", color: "#d4d4d8", marginBottom: "12px", lineHeight: 1.5 },
   splitBars: { display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" },
   splitRow: { display: "flex", alignItems: "center", gap: "10px" },
@@ -624,6 +660,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   errorDetail: { marginTop: "6px", fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap", color: "#f0a0a0", maxHeight: "140px", overflowY: "auto" },
   successBanner: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
     marginTop: "16px",
     padding: "14px 16px",
     borderRadius: "10px",

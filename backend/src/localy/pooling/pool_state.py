@@ -83,6 +83,12 @@ class PoolState:
         with self._lock:
             return self._remote.pop(node_id, None) is not None
 
+    def is_live(self, node_id: str) -> bool:
+        """Whether a remote node is currently reachable in the live pool."""
+        self.prune_stale()
+        with self._lock:
+            return node_id in self._remote
+
     def prune_stale(self) -> list[str]:
         """Drop nodes not seen recently. Returns the removed node ids."""
         now = time.time()

@@ -4,6 +4,7 @@ import { HardwareReport, BenchmarkResult } from "../api/types";
 import { apiClient } from "../api/client";
 import { DownloadProgress } from "../components/DownloadProgress";
 import { DownloadTracker, ProgressStats } from "../lib/downloadTracker";
+import { ArrowRight, Lightbulb, PartyPopper, Sparkles } from "lucide-react";
 
 interface SetupPageProps {
   onComplete: () => void;
@@ -107,14 +108,14 @@ export const SetupPage: React.FC<SetupPageProps> = ({ onComplete }) => {
         {/* Step 1: Welcome Screen */}
         {step === 1 && (
           <div style={styles.slide}>
-            <div style={styles.iconCircle}>🌌</div>
+            <div style={styles.iconCircle}><Sparkles size={42} aria-hidden="true" /></div>
             <h1 style={styles.title}>Welcome to Localy</h1>
             <p style={styles.subtitle}>
               Localy is a speed-oriented serve platform designed to run open-source LLMs 
               directly on your computer. Let's run a quick hardware check to configure optimal settings.
             </p>
             <button className="btn btn-primary" style={styles.actionBtn} onClick={startScan}>
-              Start Hardware Scan &rarr;
+              Start Hardware Scan <ArrowRight size={16} aria-hidden="true" />
             </button>
             <button
               className="btn btn-secondary"
@@ -174,7 +175,7 @@ export const SetupPage: React.FC<SetupPageProps> = ({ onComplete }) => {
             </div>
 
             <div style={styles.recommendBox}>
-              <h3 style={styles.recommendTitle}>💡 Default Recommended Model</h3>
+              <h3 style={styles.recommendTitle}><Lightbulb size={15} aria-hidden="true" /> Default Recommended Model</h3>
               <p style={styles.recommendText}>
                 We recommend starting with <strong>SmolLM2 1.7B Instruct (Q4_K_M)</strong>. It occupies ~1.0 GB of memory, fits comfortably inside your RAM budget, and will execute with high throughput on your CPU.
               </p>
@@ -217,7 +218,7 @@ export const SetupPage: React.FC<SetupPageProps> = ({ onComplete }) => {
               </div>
             ) : (
               <div>
-                <div style={styles.celebrateCircle}>🎉</div>
+                <div style={styles.celebrateCircle}><PartyPopper size={48} aria-hidden="true" /></div>
                 <h2 style={styles.title}>Calibration Complete!</h2>
                 <p style={styles.subtitle}>Localy is fully calibrated and optimized for your machine.</p>
 
@@ -234,7 +235,7 @@ export const SetupPage: React.FC<SetupPageProps> = ({ onComplete }) => {
                 )}
 
                 <button className="btn btn-primary" style={styles.actionBtn} onClick={onComplete}>
-                  Go to Chat &rarr;
+                  Go to Chat <ArrowRight size={16} aria-hidden="true" />
                 </button>
               </div>
             )}
@@ -269,7 +270,6 @@ const styles: { [key: string]: React.CSSProperties } = {
     alignItems: "center"
   },
   iconCircle: {
-    fontSize: "48px",
     width: "90px",
     height: "90px",
     borderRadius: "50%",
@@ -278,7 +278,8 @@ const styles: { [key: string]: React.CSSProperties } = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: "24px"
+    marginBottom: "24px",
+    color: "#818cf8"
   },
   title: {
     fontSize: "24px",
@@ -361,6 +362,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     width: "100%"
   },
   recommendTitle: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
     fontSize: "13px",
     fontWeight: "600",
     color: "#818cf8",
@@ -407,7 +411,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontFamily: "monospace"
   },
   celebrateCircle: {
-    fontSize: "48px",
+    display: "flex",
+    justifyContent: "center",
+    color: "#a78bfa",
     marginBottom: "20px"
   },
   benchmarkCard: {

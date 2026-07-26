@@ -83,6 +83,8 @@ class DownloadManager:
                 progress_callback=cb,
                 cancel_check=lambda: self._cancel.get(model_id, False),
             )
+            if self._cancel.get(model_id, False):
+                raise DownloadCancelledError("cancelled")
             # For vision repos, also fetch the companion mmproj projector so the
             # model can actually take images. Best-effort — a failure here does
             # not fail the model download (it just falls back to text-only).
@@ -91,6 +93,9 @@ class DownloadManager:
             self._state[model_id]["speed_mbps"] = 0.0
             logger.info("download_done_bg", model=model_id)
         except DownloadCancelledError:
+            self._state[model_id]["status"] = "cancelled"
+            logger.info("download_cancelled_bg", model=model_id)
+        except asyncio.CancelledError:
             self._state[model_id]["status"] = "cancelled"
             logger.info("download_cancelled_bg", model=model_id)
         except Exception as e:  # noqa: BLE001
@@ -133,9 +138,14 @@ class DownloadManager:
 
     def cancel(self, model_id: str) -> dict[str, Any]:
         """Request cancellation. The .part is kept so it can be resumed later."""
-        if model_id in self._tasks:
+        task = self._tasks.get(model_id)
+        if task is not None:
             self._cancel[model_id] = True
-        return {"model_id": model_id, "cancelling": model_id in self._tasks}
+            if model_id in self._state:
+                self._state[model_id]["status"] = "cancelling"
+                self._state[model_id]["speed_mbps"] = 0.0
+            task.cancel()
+        return {"model_id": model_id, "cancelling": task is not None}
 
     def status(self) -> list[dict[str, Any]]:
         """Progress of all known downloads this session."""

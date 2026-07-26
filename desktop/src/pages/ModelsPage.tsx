@@ -3,6 +3,7 @@ import { api } from "../api/endpoints";
 import { RegistryModel } from "../api/types";
 import { DownloadProgress } from "../components/DownloadProgress";
 import { ProgressStats } from "../lib/downloadTracker";
+import { CheckCircle2, Download, Heart, Link, Search, Trash2, X } from "lucide-react";
 
 export const ModelsPage: React.FC = () => {
   const [models, setModels] = useState<RegistryModel[]>([]);
@@ -62,12 +63,12 @@ export const ModelsPage: React.FC = () => {
       const next: { [id: string]: { stats: ProgressStats | null; status: string } } = {};
       const finished: string[] = [];
       for (const d of dls) {
-        if (d.status === "downloading") {
+        if (d.status === "downloading" || d.status === "cancelling") {
           const speedBps = d.speed_mbps * 1024 * 1024;
           const eta = speedBps > 0 && d.total ? (d.total - d.completed) / speedBps : Infinity;
           const start = startTimes.current[d.model_id] || Date.now();
           next[d.model_id] = {
-            status: "downloading",
+            status: d.status,
             stats: {
               completed: d.completed,
               total: d.total,
@@ -85,7 +86,7 @@ export const ModelsPage: React.FC = () => {
       setDownloads(next);
       if (finished.length) {
         finished.forEach((f) => f.startsWith("error:") && alert(`Download failed: ${f.slice(6)}`));
-        fetchCatalog();
+        if (finished.includes("done")) fetchCatalog();
       }
     } catch {
       /* backend momentarily unreachable */
@@ -172,8 +173,18 @@ export const ModelsPage: React.FC = () => {
 
   // Cancel an in-progress background download (partial kept for resume).
   const handleCancelDownload = async (modelId: string) => {
-    await api.cancelDownload(modelId);
-    pollDownloads();
+    setDownloads((prev) => {
+      const current = prev[modelId];
+      if (!current) return prev;
+      return { ...prev, [modelId]: { ...current, status: "cancelling" } };
+    });
+    try {
+      await api.cancelDownload(modelId);
+      window.setTimeout(pollDownloads, 250);
+    } catch (e: any) {
+      alert(`Cancel failed: ${e.message}`);
+      pollDownloads();
+    }
   };
 
   // Delete model
@@ -242,7 +253,10 @@ export const ModelsPage: React.FC = () => {
               onKeyDown={(e) => { if (e.key === "Enter") searchHF(); }}
             />
             <button className="btn btn-primary" onClick={searchHF} disabled={hfBusy === "search"}>
-              {hfBusy === "search" ? "Searching…" : "🔍 Search HF"}
+              {hfBusy === "search" ? "Searching…" : <><Search size={16} aria-hidden="true" /> Search HF</>}
+            </button>
+            <button className="btn btn-secondary" onClick={() => addHF(hfQuery.trim())} disabled={!hfQuery.trim() || !!hfBusy}>
+              <Link size={16} aria-hidden="true" /> Add link/repo
             </button>
           </div>
 
@@ -259,7 +273,9 @@ export const ModelsPage: React.FC = () => {
                     <div key={r.id} style={styles.hfResult}>
                       <div style={styles.hfResultInfo}>
                         <span style={styles.hfResultId}>{r.id}</span>
-                        <span style={styles.hfResultMeta}>▼ {r.downloads.toLocaleString()} · ♥ {r.likes.toLocaleString()}</span>
+                        <span style={styles.hfResultMeta}>
+                          <Download size={12} aria-hidden="true" /> {r.downloads.toLocaleString()} · <Heart size={12} aria-hidden="true" /> {r.likes.toLocaleString()}
+                        </span>
                       </div>
                       <button className="btn btn-secondary" style={styles.hfAddBtn} onClick={() => addHF(r.id)} disabled={hfBusy === r.id}>
                         {hfBusy === r.id ? "Adding…" : "+ Add"}
@@ -326,7 +342,7 @@ export const ModelsPage: React.FC = () => {
                     <select
                       value={selectedQuant}
                       onChange={(e) => handleQuantChange(m.id, e.target.value)}
-                      disabled={download?.status === "downloading"}
+                      disabled={download?.status === "downloading" || download?.status === "cancelling"}
                       style={styles.quantSelect}
                     >
                       {m.variants.map(v => (
@@ -365,19 +381,20 @@ export const ModelsPage: React.FC = () => {
                           className="btn btn-secondary"
                           style={{ ...styles.actionBtn, marginTop: "8px" }}
                           onClick={() => handleCancelDownload(selectedModelSpec)}
+                          disabled={download.status === "cancelling"}
                         >
-                          Cancel
+                          {download.status === "cancelling" ? "Cancelling..." : <><X size={14} aria-hidden="true" /> Cancel</>}
                         </button>
                       </div>
                     ) : isDownloaded ? (
                       <div style={styles.downloadedActions}>
-                        <span style={styles.downloadStatusText}>✅ Local Variant</span>
+                        <span style={styles.downloadStatusText}><CheckCircle2 size={14} aria-hidden="true" /> Local Variant</span>
                         <button
                           className="btn btn-secondary"
                         onClick={() => handleDelete(selectedModelSpec)}
                           style={styles.actionBtn}
                         >
-                          Delete
+                          <Trash2 size={14} aria-hidden="true" /> Delete
                         </button>
                       </div>
                     ) : (
@@ -456,7 +473,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   hfResult: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "rgba(255,255,255,0.02)", border: "1px solid var(--panel-border)", borderRadius: "8px" },
   hfResultInfo: { display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 },
   hfResultId: { fontSize: "13px", color: "#e4e4e7", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  hfResultMeta: { fontSize: "11px", color: "#71717a" },
+  hfResultMeta: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#71717a" },
   hfAddBtn: { fontSize: "12px", padding: "6px 14px", flexShrink: 0 },
   contentArea: {
     flexGrow: 1,
@@ -565,7 +582,11 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   actionBtn: {
     fontSize: "13px",
-    padding: "10px"
+    padding: "10px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "6px"
   },
   downloadedActions: {
     display: "flex",
@@ -574,6 +595,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     width: "100%"
   },
   downloadStatusText: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
     fontSize: "13px",
     color: "var(--semantic-success)",
     fontWeight: "500"

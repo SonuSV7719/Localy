@@ -1,4 +1,5 @@
 import React from "react";
+import { Check, Copy } from "lucide-react";
 
 // Lightweight, dependency-free Markdown renderer.
 //
@@ -60,7 +61,7 @@ const CodeBlock: React.FC<{ code: string; lang?: string }> = ({ code, lang }) =>
       <div style={styles.codeHeader}>
         <span style={styles.codeLang}>{lang || "code"}</span>
         <button type="button" onClick={copy} style={styles.copyBtn}>
-          {copied ? "✓ Copied" : "Copy"}
+          {copied ? <><Check size={13} aria-hidden="true" /> Copied</> : <><Copy size={13} aria-hidden="true" /> Copy</>}
         </button>
       </div>
       <pre style={styles.pre}>
@@ -198,6 +199,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   codeLang: { fontSize: "11px", color: "#71717a", textTransform: "uppercase", letterSpacing: "0.04em" },
   copyBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
     fontSize: "11px",
     color: "#a1a1aa",
     background: "transparent",

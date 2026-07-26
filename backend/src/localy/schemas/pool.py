@@ -13,6 +13,7 @@ class PoolNodeResponse(BaseModel):
     is_local: bool
     label: str
     budget_gb: float
+    online: bool = True
 
 
 class PoolLoadProgress(BaseModel):
@@ -32,7 +33,7 @@ class PoolLoadProgress(BaseModel):
     bytes_sent: int | None = None  # observed network bytes when telemetry is available
     bytes_is_estimate: bool = True
     speed_bps: float | None = None  # measured from observed network bytes/sec
-    transfer_measurement: str = "not_available"  # observed_network | not_available
+    transfer_measurement: str = "not_available"  # observed_network | estimated_from_loader | not_available
     transfer_idle_s: float | None = None
     node_count: int = 0
     remote_count: int = 0
@@ -46,6 +47,8 @@ class PoolStatusResponse(BaseModel):
     worker_running: bool = False
     node_count: int
     remote_count: int
+    online_count: int = 0
+    offline_count: int = 0
     total_budget_gb: float
     loading: PoolLoadProgress | None = None
     nodes: list[PoolNodeResponse]

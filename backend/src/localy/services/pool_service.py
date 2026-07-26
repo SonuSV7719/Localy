@@ -10,10 +10,11 @@ for a model that doesn't fit locally and has remote workers available.
 
 from __future__ import annotations
 
-import socket
 import threading
 import time
 from collections import deque
+
+import httpx
 
 from localy.core.config import Settings
 from localy.core.constants import (
@@ -140,6 +141,11 @@ class PoolService:
     ) -> PoolNode:
         """Manually add a remote worker to the pool (Stage 1)."""
         node_id = f"{host}:{port}"
+        if not self._probe_worker(host, port, metrics_port, POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS):
+            raise PoolingError(
+                f"Cannot reach worker at {node_id}. Make sure sharing is on, "
+                "the device is awake, and both devices are on the same WiFi/hotspot."
+            )
         # Without discovery metadata we can't probe the remote's RAM. Assuming
         # this PC's budget badly over-estimates a phone/tablet, which then gets
         # assigned too many layers and OOM-crashes mid-serving. Use a modest,
@@ -174,13 +180,28 @@ class PoolService:
 
     # --- liveness heartbeat ---
     @staticmethod
-    def _probe(host: str, port: int, timeout: float) -> bool:
-        """True if a TCP connection to host:port succeeds (worker is alive)."""
+    def _probe_worker(host: str, port: int, metrics_port: int | None, timeout: float) -> bool:
+        """True if the worker responds without poisoning the RPC socket.
+
+        llama.cpp RPC requires the first bytes on a connection to be an RPC
+        HELLO. A bare TCP connect/close can occupy the worker's tiny listen
+        backlog and make the next real coordinator handshake time out. Android
+        workers expose a separate HTTP metrics port, so use that whenever
+        available; otherwise perform a proper RPC protocol preflight.
+        """
+        if metrics_port:
+            try:
+                response = httpx.get(f"http://{host}:{metrics_port}/metrics", timeout=timeout)
+                if response.status_code < 400:
+                    data = response.json()
+                    return bool(data.get("running", True))
+            except Exception:
+                return False
+
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(timeout)
-                return s.connect_ex((host, port)) == 0
-        except OSError:
+            Coordinator._verify_rpc_workers([f"{host}:{port}"])
+            return True
+        except Exception:
             return False
 
     def _heartbeat_loop(self) -> None:
@@ -204,7 +225,12 @@ class PoolService:
                 members = list(self._members.items())
             for node_id, node in members:
                 try:
-                    if self._probe(node.host, node.port, POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS):
+                    if self._probe_worker(
+                        node.host,
+                        node.port,
+                        node.metrics_port,
+                        POOL_HEARTBEAT_PROBE_TIMEOUT_SECONDS,
+                    ):
                         # upsert adds it back if it had aged out, or just touches it.
                         self._state.upsert(node)
                 except Exception:  # pragma: no cover - probe must never crash the loop
@@ -333,18 +359,29 @@ class PoolService:
         """Live topology plus a bounded coordination timeline for the UI."""
         status = self.status()
         model = status["active_model"]
-        plan = None
+        plan_dict = None
         if model:
             try:
-                plan = self.plan_for_model(model)
+                plan_dict = self.plan_for_model(model).to_dict()
             except Exception:
                 pass
-        shares = {n.node_id: n.layer_share_pct for n in plan.nodes} if plan else {}
+        shares = {
+            n["node_id"]: n["layer_share_pct"]
+            for n in plan_dict["nodes"]
+        } if plan_dict else {}
         for node in status["nodes"]:
             node["planned_layer_share_pct"] = round(shares.get(node["node_id"], 0.0), 1)
-            node["planned_model_bytes"] = int((plan.model_size_bytes if plan else 0) * shares.get(node["node_id"], 0.0) / 100)
+            node["planned_model_bytes"] = int(
+                (plan_dict["model_size_bytes"] if plan_dict else 0)
+                * shares.get(node["node_id"], 0.0)
+                / 100
+            )
             node["memory_measurement"] = "planned_budget"
-        return {"status": status, "events": list(self._events), "model_size_bytes": plan.model_size_bytes if plan else None}
+        return {
+            "status": status,
+            "events": list(self._events),
+            "model_size_bytes": plan_dict["model_size_bytes"] if plan_dict else None,
+        }
 
     # --- status ---
     @property
@@ -365,8 +402,20 @@ class PoolService:
         return self._coordinator.proxy_url if self._coordinator.is_running else None
 
     def status(self) -> dict:
-        nodes = self._state.all_nodes()
-        total = sum(n.budget_bytes for n in nodes)
+        live_nodes = self._state.all_nodes()
+        live_by_id = {n.node_id: n for n in live_nodes if not n.is_local}
+        with self._members_lock:
+            joined_nodes = list(self._members.values())
+
+        nodes = []
+        if self._state.local is not None:
+            nodes.append((self._state.local, True))
+        for member in joined_nodes:
+            nodes.append((live_by_id.get(member.node_id, member), member.node_id in live_by_id))
+
+        total = sum(n.budget_bytes for n, online in nodes if online)
+        online_count = sum(1 for _, online in nodes if online)
+        offline_count = len(nodes) - online_count
         return {
             # "active" now means *ready and serving* — matches is_serving, so the
             # UI's 🔗 badge only shows once the pool can actually answer requests.
@@ -375,7 +424,9 @@ class PoolService:
             "proxy_url": self.proxy_url,
             "worker_running": self.worker_running,
             "node_count": len(nodes),
-            "remote_count": len(self._state.remote_nodes()),
+            "remote_count": len(joined_nodes),
+            "online_count": online_count,
+            "offline_count": offline_count,
             "total_budget_gb": round(total / (1024**3), 2),
             "loading": self._coordinator.progress(),
             "nodes": [
@@ -385,8 +436,9 @@ class PoolService:
                     "is_local": n.is_local,
                     "label": n.label,
                     "budget_gb": round(n.budget_gb, 2),
+                    "online": online,
                 }
-                for n in nodes
+                for n, online in nodes
             ],
         }
 

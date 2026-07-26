@@ -59,8 +59,8 @@ async function request<T>(
 
     try {
       const errorJson = await response.json();
-      message = errorJson.message || message;
-      code = errorJson.error_code;
+      message = errorJson.error?.message || errorJson.detail || errorJson.message || message;
+      code = errorJson.error?.code || errorJson.error_code;
     } catch {
       // Fallback if not JSON
     }
