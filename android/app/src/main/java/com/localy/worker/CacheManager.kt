@@ -5,8 +5,9 @@ import java.io.File
 
 /**
  * Manages the on-device RPC weight cache (populated by ggml-rpc-server's
- * --cache, pointed at filesDir/rpc-cache via LLAMA_CACHE). These are cached
- * tensor blocks streamed from coordinators so models aren't re-transferred.
+ * --cache). LLAMA_CACHE points at filesDir/rpc-cache, and llama.cpp creates
+ * the actual RPC block cache below that as rpc/. These are cached tensor blocks
+ * streamed from coordinators so models aren't re-transferred.
  *
  * Enumeration and deletion are done off the main thread by the caller.
  */
@@ -21,8 +22,11 @@ object CacheManager {
         val lastModified: Long,
     )
 
-    fun cacheDir(context: Context): File =
+    fun cacheRoot(context: Context): File =
         File(context.filesDir, CACHE_SUBDIR).apply { mkdirs() }
+
+    fun cacheDir(context: Context): File =
+        File(cacheRoot(context), "rpc").apply { mkdirs() }
 
     /** Top-level cache entries (files or subdirs), each with its recursive size. */
     fun list(context: Context): List<Entry> {
@@ -38,7 +42,7 @@ object CacheManager {
         }.sortedByDescending { it.sizeBytes }
     }
 
-    fun totalSize(context: Context): Long = sizeOf(cacheDir(context))
+    fun totalSize(context: Context): Long = sizeOf(cacheRoot(context))
 
     /** Delete the given entries. Returns the number successfully removed. */
     fun delete(paths: Collection<String>): Int {
@@ -51,7 +55,7 @@ object CacheManager {
 
     /** Wipe the entire cache. */
     fun clearAll(context: Context): Boolean {
-        val dir = cacheDir(context)
+        val dir = cacheRoot(context)
         val ok = dir.listFiles()?.all { deleteRecursively(it) } ?: true
         return ok
     }

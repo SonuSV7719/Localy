@@ -40,12 +40,15 @@ class RpcWorker(private val context: Context) {
             return false
         }
         return try {
+            val cacheRoot = CacheManager.cacheRoot(context)
             val pb = ProcessBuilder(
                 bin.absolutePath,
                 "--host", "0.0.0.0",
                 "--port", port.toString(),
-                "--threads", threads.toString()
+                "--threads", threads.toString(),
+                "--cache"
             )
+            pb.environment()["LLAMA_CACHE"] = cacheRoot.absolutePath
             pb.redirectErrorStream(true)
             pb.directory(context.filesDir)
             val proc = pb.start()
@@ -70,7 +73,7 @@ class RpcWorker(private val context: Context) {
                 Log.e(TAG, lastError!!)
                 false
             } else {
-                Log.i(TAG, "rpc-server running on :$port with $threads threads")
+                Log.i(TAG, "rpc-server running on :$port with $threads threads; cache=${cacheRoot.absolutePath}")
                 true
             }
         } catch (e: Exception) {
